@@ -1,0 +1,67 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+---
+description: 
+globs: 
+alwaysApply: true
+---
+### 🔄 Project Awareness & Context
+- **Always read `PLANNING.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
+- **Check `TASK.md`** before starting a new task. If the task isn’t listed, add it with a brief description and today's date.
+- **Use consistent naming conventions, file structure, and architecture patterns** as described in `PLANNING.md`.
+-**Always read `DATABASE.md`** to understand the structure of our database and how we can implement it where necessary, or suggest modifications during development of features.
+-**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions.
+- **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section, especially for anything where placeholders are made that will be addressed later.
+-**Stop regularly to update the `CHANGELOG.md` and other documentation** when significant changes are made, or revisions to our approach come up, including notes of why the changes were made, and their locations.
+- **Stop the conversation to have the user manually run tests** instead of trying to run them in the integrated IDE terminal.
+
+### 🧱 Code Structure & Modularity
+- **Never create a file longer than 500 lines of code.** If a file approaches this limit, refactor by splitting it into modules or helper files.
+- **Organize code into clearly separated modules**, grouped by feature or responsibility.
+- **Use clear, consistent imports** (prefer relative imports within packages).
+- **Notice places where our database is insufficent** while writing code and stop to recommend adding or revising tables or fields.
+
+### 🧪 Testing & Reliability
+- **Always create Pytest unit tests for new features** (functions, classes, routes, etc).
+- **After updating any logic**, check whether existing unit tests need to be updated. If so, do it.
+- **Tests should live in a `/tests` folder** mirroring the main app structure.
+  - Include at least:
+    - 1 test for expected use
+    - 1 edge case
+    - 1 failure case
+
+### ✅ Task Completion
+- **Mark completed tasks in `TASK.md`** immediately after finishing them, while adding new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section.
+- **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section.
+
+### 📎 Style & Conventions
+- **Use Python** as the primary language.
+- **Follow PEP8**, use type hints, and format with `black`.
+- **Use `pydantic` for data validation**.
+- Use `FastAPI` for APIs and `SQLAlchemy` or `SQLModel` for ORM if applicable.
+- Write **docstrings for every function** using the Google style:
+  ```python
+  def example():
+      """
+      Brief summary.
+
+      Args:
+          param1 (type): Description.
+
+      Returns:
+          type: Description.
+      """
+  ```
+
+### 📚 Documentation & Explainability
+- **Update `README.md`** when new features are added, dependencies change, or setup steps are modified.
+- **Comment non-obvious code** and ensure everything is understandable to a mid-level developer.
+- When writing complex logic, **add an inline `# Reason:` comment** explaining the why, not just the what.
+
+### 🧠 AI Behavior Rules
+- **Never assume missing context. Ask questions if uncertain.**
+- **Never hallucinate libraries or functions** – only use known, verified Python packages.
+- **Always confirm file paths and module names** exist before referencing them in code or tests.
