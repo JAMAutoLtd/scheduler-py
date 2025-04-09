@@ -90,11 +90,11 @@ This document tracks the development tasks for the dynamic job scheduling system
     *   [ ] Aim for happy path, edge case, and failure case tests for key functions.
     *   *Note:* Integration tests involving the actual microservice might be needed separately.
     *   [ ] Follow sequential test order for troubleshooting:
-        *   [ ] **Supabase Data Fetching (`tests/supabase/`)**
+        *   [X] **Supabase Data Fetching (`tests/supabase/`)**
             *   [X] `jobs.test.ts`
             *   [X] `technicians.test.ts`
             *   [X] `orders.test.ts`
-            *   [ ] `equipment.test.ts`
+            *   [X] `equipment.test.ts`
         *   [X] **Google Maps (`tests/google/`)**
             *   [X] `maps.test.ts`
         *   [ ] **Scheduler Logic (Pre-Payload) (`tests/scheduler/`)**
@@ -109,8 +109,8 @@ This document tracks the development tasks for the dynamic job scheduling system
             *   [X] `update.test.ts` (`tests/db/`)
 
 *   **[ ] Documentation & Finalization** - (Est: 2h) - {Date}
-    *   [ ] Update `README.md` with setup instructions, how to run, and overview.
-    *   [ ] Add necessary code comments (docstrings, `# Reason:` where needed).
+    *   [X] Update `README.md` with setup instructions, how to run, and overview.
+    *   [X] Add necessary code comments (docstrings, `# Reason:` where needed).
     *   [ ] Final review and cleanup.
     *   [ ] Create/update `CHANGELOG.md`.
 

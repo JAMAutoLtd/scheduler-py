@@ -6,10 +6,10 @@
 
 **Fields**
 
-- **id** (uuid, PK) - Primary key, also references auth.users
-- **full_name** (varchar(100)) - User's full name
-- **phone** (varchar(100)) - Contact phone number
-- **home_address_id** (int, FK → addresses.id) - Reference to user's home address
+- **id** (uuid, PK) - Primary key, also references auth.users, e.g.: `1c12912d-111f-4ac6-8aff-07cca81c4e5b`
+- **full_name** (varchar(100)) - User's full name, e.g.: `Jacob`
+- **phone** (varchar(100)) - Contact phone number, e.g.: `5877155524`
+- **home_address_id** (int, FK → addresses.id) - Reference to user's home address, e.g.: 3
 - **is_admin** (boolean) - Indicates if the user is an administrator (default: false)
 - **customer_type** (enum: 'residential', 'commercial', 'insurance') - Defines the type of customer
 
@@ -67,7 +67,7 @@
 **Fields**
 
 - **id** (int, PK)
-- **street_address** (varchar(255))
+- **street_address** (varchar(255)), e.g.: `5342 72 Ave SE, Calgary, AB T2C 4X5, Canada`
 - **lat** (numeric) - Latitude coordinate
 - **lng** (numeric) - Longitude coordinate
 
@@ -164,9 +164,9 @@
 - **order_id** (int, FK → orders.id) - Links back to the original order
 - **assigned_technician** (int, FK → technicians.id) - Who will perform this job
 - **address_id** (int, FK → addresses.id) - Service location
-- **priority** (int) - Scheduling priority (must be >= 0)
-- **status** (USER-DEFINED) - e.g., 'Pending', 'Scheduled', 'InProgress', 'Completed'
-- **requested_time** (timestamp with time zone) - Customer's requested time
+- **priority** (int) - Scheduling priority, 1 is highest (must be >= 0)
+- **status** (USER-DEFINED) - e.g., `queued`, `en_route`, `in_progress`, `fixed_time`, `pending_review`, `pending_revisit`, `cancelled`, `completed`, `paid`
+- **requested_time** (timestamp with time zone) - Customer's requested time, e.g. `2025-03-18 23:00:00+00`
 - **estimated_sched** (timestamp with time zone, nullable) - The start time calculated by the scheduling algorithm.
 - **job_duration** (int) - Estimated minutes to complete (must be > 0)
 - **notes** (text, nullable) - General notes about the job.
@@ -174,9 +174,6 @@
 - **service_id** (int, FK → services.id)
 - **fixed_assignment** (boolean, default: false) - Indicates if the job assignment is manually fixed and should not be changed by the dynamic scheduler. Needed to support manual overrides.
 - **fixed_schedule_time** (timestamp with time zone, nullable) - If set, specifies a mandatory start time for the job. The scheduler must plan other dynamic jobs around this constraint.
-- **estimated_sched_end** (timestamp with time zone, nullable) - Removed.
-- **customer_eta_start** (timestamp with time zone, nullable) - Removed.
-- **customer_eta_end** (timestamp with time zone, nullable) - Removed.
 
 **Key Points**
 
@@ -252,7 +249,7 @@
 
 - **id** (int, PK)
 - **equipment_type** (enum: 'adas', 'airbag', 'immo', 'prog', 'diag') - Must be unique
-- **model** (text)
+- **model** (text) e.g.: `AUTEL-CSC0602/01`, `immo` (placeholder encompassing all immo equipment)
 
 **Key Points**
 
@@ -318,7 +315,7 @@
 
 ## 17. Equipment Requirements Tables
 
-The system uses separate tables for different types of equipment requirements, each following a similar structure but specialized for different service categories:
+The system uses separate tables for different types of equipment requirements, each following a similar structure but specialized for different service categories. Used to look up equipment requirements by referencing the correct table using the service category of the service requested in the job, (e.g. `immo` category will look up `immo_equipment_requirements`,) by the `ymm_ref` entry, (matching the `year` `make` `model` of the `customer_vehicles` of an order,) and the `service_id` of the service requested in the job, to return an `equipment_model`, which we check against `van_equipment` to determine eligible vans and corresponding technicians for a job.
 
 ### ADAS Equipment Requirements (adas_equipment_requirements)
 
@@ -328,7 +325,7 @@ The system uses separate tables for different types of equipment requirements, e
 - **id** (int, PK)
 - **ymm_id** (int, FK → ymm_ref.ymm_id)
 - **service_id** (int, FK → services.id)
-- **equipment_model** (varchar(100)) NOT NULL
+- **equipment_model** (varchar(100)) NOT NULL  (should match an `equipment` entry)
 - **has_adas_service** (boolean) - Default: false
 - Unique constraint on (ymm_id, service_id)
 

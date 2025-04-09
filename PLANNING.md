@@ -232,6 +232,6 @@ Step 5: Update System State (Node.js -> Supabase)
 
 Use supabase-js to perform batch updates:
 
-For scheduled jobs: Set assigned_technician, estimated_sched, status='scheduled'.
+For scheduled jobs: Set assigned_technician, estimated_sched, status='queued'.
 
 For overflow jobs: Set status='pending_review'.
