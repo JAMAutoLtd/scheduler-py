@@ -89,6 +89,24 @@ This document tracks the development tasks for the dynamic job scheduling system
     *   [X] Write unit tests for Database Update module (mocking Supabase client). - {Current Date}
     *   [ ] Aim for happy path, edge case, and failure case tests for key functions.
     *   *Note:* Integration tests involving the actual microservice might be needed separately.
+    *   [ ] Follow sequential test order for troubleshooting:
+        *   [ ] **Supabase Data Fetching (`tests/supabase/`)**
+            *   [ ] `jobs.test.ts`
+            *   [ ] `technicians.test.ts`
+            *   [ ] `orders.test.ts`
+            *   [ ] `equipment.test.ts`
+        *   [ ] **Google Maps (`tests/google/`)**
+            *   [ ] `maps.test.ts`
+        *   [ ] **Scheduler Logic (Pre-Payload) (`tests/scheduler/`)**
+            *   [ ] `availability.test.ts`
+            *   [ ] `bundling.test.ts`
+            *   [ ] `eligibility.test.ts`
+        *   [ ] **Optimization Payload & Call (`tests/scheduler/`)**
+            *   [ ] `payload.test.ts`
+            *   [ ] `optimize.test.ts`
+        *   [ ] **Result Processing & DB Update (`tests/scheduler/` & `tests/db/`)**
+            *   [ ] `results.test.ts`
+            *   [ ] `update.test.ts` (`tests/db/`)
 
 *   **[ ] Documentation & Finalization** - (Est: 2h) - {Date}
     *   [ ] Update `README.md` with setup instructions, how to run, and overview.
