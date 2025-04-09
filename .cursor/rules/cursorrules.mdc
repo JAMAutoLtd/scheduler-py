@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: false
+alwaysApply: true
 ---
 ---
 description: 
@@ -13,7 +13,7 @@ alwaysApply: true
 - **Check `TASK.md`** before starting a new task. If the task isn’t listed, add it with a brief description and today's date.
 - **Use consistent naming conventions, file structure, and architecture patterns** as described in `PLANNING.md`.
 -**Always read `DATABASE.md`** to understand the structure of our database and how we can implement it where necessary, or suggest modifications during development of features.
--**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions.
+-**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions; never assume what our database calls will return, and always check with query to validate expected data formats.
 - **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section, especially for anything where placeholders are made that will be addressed later.
 -**Stop regularly to update the `CHANGELOG.md` and other documentation** when significant changes are made, or revisions to our approach come up, including notes of why the changes were made, and their locations.
 - **Stop the conversation to have the user manually run tests** instead of trying to run them in the integrated IDE terminal.
