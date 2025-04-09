@@ -15,8 +15,10 @@ function findEligibleTechnicians(
     vanEquipmentMap: Map<number, VanEquipment[]>
 ): number[] {
     if (requiredModels.length === 0) {
-        // If no specific equipment is required, all technicians are eligible
-        return technicians.map(tech => tech.id);
+        // If no specific equipment is required, all technicians *with assigned vans* are eligible
+        return technicians
+            .filter(tech => tech.assigned_van_id !== null)
+            .map(tech => tech.id);
     }
 
     const eligibleTechIds: number[] = [];
@@ -63,9 +65,10 @@ export async function determineTechnicianEligibility(
     for (const item of initialItems) {
         let requiredModels: string[] = [];
         let eligibleTechIds: number[] = [];
-        let isStillBundle = 'is_bundle' in item && item.is_bundle !== false; // Check if it's a JobBundle
+        // Change: Use property check ('jobs' in item) to reliably identify JobBundles
+        const isJobBundle = 'jobs' in item;
 
-        if (isStillBundle) {
+        if (isJobBundle) {
             const bundle = item as JobBundle;
             console.log(`Processing Bundle for Order ID: ${bundle.order_id}`);
             // Aggregate required equipment from all jobs in the bundle
@@ -84,7 +87,6 @@ export async function determineTechnicianEligibility(
             if (eligibleTechIds.length === 0 && bundle.jobs.length > 1) {
                 // No tech can handle the whole bundle, break it
                 console.warn(`No eligible technicians found for Bundle Order ID ${bundle.order_id}. Breaking into single jobs.`);
-                isStillBundle = false;
                 // Convert each job in the bundle into a SchedulableJob
                 for (const job of bundle.jobs) {
                     const singleJobReqs = await getRequiredEquipmentForJob(job);
@@ -110,6 +112,11 @@ export async function determineTechnicianEligibility(
         } else {
             // Process a single SchedulableJob
             const schedJob = item as SchedulableJob;
+            // Added check to ensure it's actually a SchedulableJob (belt and suspenders)
+            if (!schedJob.job || !schedJob.job.id) {
+                 console.error('Error: Item treated as SchedulableJob is missing expected job property:', item);
+                 continue; // Skip this malformed item
+            }
             console.log(`Processing Single Job ID: ${schedJob.job.id}`);
             requiredModels = await getRequiredEquipmentForJob(schedJob.job);
             eligibleTechIds = findEligibleTechnicians(requiredModels, technicians, vanEquipmentMap);

@@ -100,7 +100,7 @@ This document tracks the development tasks for the dynamic job scheduling system
         *   [ ] **Scheduler Logic (Pre-Payload) (`tests/scheduler/`)**
             *   [ ] `availability.test.ts` **NYI**
             *   [X] `bundling.test.ts`
-            *   [ ] `eligibility.test.ts`
+            *   [X] `eligibility.test.ts`
         *   [ ] **Optimization Payload & Call (`tests/scheduler/`)**
             *   [ ] `payload.test.ts`
             *   [ ] `optimize.test.ts`

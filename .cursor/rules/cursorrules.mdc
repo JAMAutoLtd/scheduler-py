@@ -9,11 +9,10 @@ globs:
 alwaysApply: true
 ---
 ### 🔄 Project Awareness & Context
-- **Always read `PLANNING.md` and `README.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
+- **Always read `PLANNING.md` and `README.md` and`DB.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
 - **Check `TASK.md`** before starting a new task. If the task isn’t listed, add it with a brief description and today's date.
 - **Always aim to do ONE task at a time**, stopping to check in after each.
 - **Use consistent naming conventions, file structure, and architecture patterns** as described in `PLANNING.md`.
--**Always read `DB.md`** to understand the structure of our database and how we can implement it where necessary, or suggest modifications during development of features.
 -**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions; never assume what our database calls will return, and always check with query to validate expected data formats.
 - **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section, especially for anything where placeholders are made that will be addressed later.
 -**Stop regularly to update the `CHANGELOG.md` and other documentation** when significant changes are made, or revisions to our approach come up, including notes of why the changes were made, and their locations.
