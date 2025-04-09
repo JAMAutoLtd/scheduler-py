@@ -9,10 +9,11 @@ globs:
 alwaysApply: true
 ---
 ### 🔄 Project Awareness & Context
-- **Always read `PLANNING.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
+- **Always read `PLANNING.md` and `README.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
 - **Check `TASK.md`** before starting a new task. If the task isn’t listed, add it with a brief description and today's date.
+- **Always aim to do ONE task at a time**, stopping to check in after each.
 - **Use consistent naming conventions, file structure, and architecture patterns** as described in `PLANNING.md`.
--**Always read `DATABASE.md`** to understand the structure of our database and how we can implement it where necessary, or suggest modifications during development of features.
+-**Always read `DB.md`** to understand the structure of our database and how we can implement it where necessary, or suggest modifications during development of features.
 -**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions; never assume what our database calls will return, and always check with query to validate expected data formats.
 - **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section, especially for anything where placeholders are made that will be addressed later.
 -**Stop regularly to update the `CHANGELOG.md` and other documentation** when significant changes are made, or revisions to our approach come up, including notes of why the changes were made, and their locations.
@@ -25,7 +26,7 @@ alwaysApply: true
 - **Notice places where our database is insufficent** while writing code and stop to recommend adding or revising tables or fields.
 
 ### 🧪 Testing & Reliability
-- **Always create Pytest unit tests for new features** (functions, classes, routes, etc).
+- **Always create test unit tests for new features** (functions, classes, routes, etc).
 - **After updating any logic**, check whether existing unit tests need to be updated. If so, do it.
 - **Tests should live in a `/tests` folder** mirroring the main app structure.
   - Include at least:
@@ -38,23 +39,10 @@ alwaysApply: true
 - **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section.
 
 ### 📎 Style & Conventions
-- **Use Python** as the primary language.
+- **Use Node.js with TypeScript** as the primary language.
 - **Follow PEP8**, use type hints, and format with `black`.
-- **Use `pydantic` for data validation**.
-- Use `FastAPI` for APIs and `SQLAlchemy` or `SQLModel` for ORM if applicable.
+- **Use data validation**.
 - Write **docstrings for every function** using the Google style:
-  ```python
-  def example():
-      """
-      Brief summary.
-
-      Args:
-          param1 (type): Description.
-
-      Returns:
-          type: Description.
-      """
-  ```
 
 ### 📚 Documentation & Explainability
 - **Update `README.md`** when new features are added, dependencies change, or setup steps are modified.
@@ -63,5 +51,5 @@ alwaysApply: true
 
 ### 🧠 AI Behavior Rules
 - **Never assume missing context. Ask questions if uncertain.**
-- **Never hallucinate libraries or functions** – only use known, verified Python packages.
+- **Never hallucinate libraries or functions** – only use known, verified packages.
 - **Always confirm file paths and module names** exist before referencing them in code or tests.
