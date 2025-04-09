@@ -1,32 +1,40 @@
 import { getTravelTime } from '../../src/google/maps';
 import { Client, LatLngLiteral, TravelMode } from '@googlemaps/google-maps-services-js';
 
+// Define the mock function *before* using it in jest.mock
+const mockDistanceMatrix = jest.fn();
+
 // Mock the Google Maps Client
 jest.mock('@googlemaps/google-maps-services-js', () => {
+    // Return a factory function for the Client mock
+    const mockClientImplementation = jest.fn().mockImplementation(() => {
+        // Each new Client instance will get this distancematrix mock
+        return {
+            distancematrix: mockDistanceMatrix, // Use the mock function defined above
+        };
+    });
+
     return {
-        Client: jest.fn().mockImplementation(() => {
-            return {
-                distancematrix: jest.fn(),
-            };
-        }),
-        TravelMode: { // Need to provide the enum used in the original file
+        // Export the mocked Client constructor
+        Client: mockClientImplementation,
+        // Export the TravelMode enum
+        TravelMode: {
             driving: 'driving',
         }
     };
 });
 
-// Mock process.env
-const originalEnv = process.env;
-process.env = {
-    ...originalEnv,
-    GOOGLE_MAPS_API_KEY: 'test-api-key',
-};
+// NOTE: process.env.GOOGLE_MAPS_API_KEY is now loaded via jest.setup.ts and dotenv
 
-// Helper to access the mock client instance and its methods
-const mockMapsClientInstance = new Client() as jest.Mocked<Client>;
-const mockDistanceMatrix = mockMapsClientInstance.distancematrix as jest.Mock;
+// No longer need a separate instance variable for the mock client
+// const mockMapsClientInstance = new Client() as jest.Mocked<Client>;
+// We will interact directly with mockDistanceMatrix defined above
 
 describe('getTravelTime', () => {
+    // We need to dynamically import the module *inside* describe/beforeEach
+    // to ensure it picks up the mocked Client and the env variable loaded by setup
+    let getTravelTimeFunc: typeof getTravelTime;
+
     const origin: LatLngLiteral = { lat: 40.7128, lng: -74.0060 }; // NYC
     const destination: LatLngLiteral = { lat: 34.0522, lng: -118.2437 }; // LA
     const expectedDuration = 15000; // Example duration in seconds
@@ -35,21 +43,25 @@ describe('getTravelTime', () => {
         jest.useFakeTimers();
     });
 
-    beforeEach(() => {
-        // Clear mocks and cache before each test
+    beforeEach(async () => {
+        // Clear the mock function's call history and reset its implementation behavior if needed
         mockDistanceMatrix.mockClear();
-        // Clear the internal cache by calling the function again, effectively resetting it
-        // We need to reset the cache module state between tests. A simple way is reloading the module.
-        jest.resetModules(); // This clears module cache including the internal cache Map
-        // Re-import after reset
-        require('../../src/google/maps');
-        // Restore mock API key as resetModules clears process.env changes within the test scope
-        process.env.GOOGLE_MAPS_API_KEY = 'test-api-key';
+        // Optional: Reset mock implementation if necessary between tests
+        // mockDistanceMatrix.mockReset(); 
+
+        // Reset modules to ensure a fresh state for the cache and client
+        jest.resetModules();
+
+        // Dynamically import the module *after* resetting modules and *after* mocks/env are set
+        // This will cause src/google/maps.ts to run again, creating a new Client
+        // which will use the mocked implementation defined above.
+        const mapsModule = await import('../../src/google/maps');
+        getTravelTimeFunc = mapsModule.getTravelTime;
     });
 
     afterAll(() => {
         jest.useRealTimers();
-        process.env = originalEnv; // Restore original environment variables
+        // No need to restore originalEnv, Jest handles this
     });
 
     it('should fetch travel time from API on cache miss', async () => {
@@ -70,7 +82,8 @@ describe('getTravelTime', () => {
             }
         });
 
-        const duration = await getTravelTime(origin, destination);
+        // Use the dynamically imported function
+        const duration = await getTravelTimeFunc(origin, destination);
 
         expect(duration).toBe(expectedDuration);
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
@@ -79,7 +92,8 @@ describe('getTravelTime', () => {
                 origins: [origin],
                 destinations: [destination],
                 mode: TravelMode.driving,
-                key: 'test-api-key',
+                // Key is now read from process.env loaded by dotenv
+                key: process.env.GOOGLE_MAPS_API_KEY, // Verify it's read correctly
             },
             timeout: 5000,
         });
@@ -90,11 +104,11 @@ describe('getTravelTime', () => {
         mockDistanceMatrix.mockResolvedValueOnce({
             data: { status: 'OK', rows: [{ elements: [{ status: 'OK', duration: { value: expectedDuration } }] }] }
         });
-        await getTravelTime(origin, destination);
+        await getTravelTimeFunc(origin, destination);
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
 
         // Second call (should hit cache)
-        const duration = await getTravelTime(origin, destination);
+        const duration = await getTravelTimeFunc(origin, destination);
         expect(duration).toBe(expectedDuration);
         // API should not be called again
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
@@ -107,7 +121,7 @@ describe('getTravelTime', () => {
         mockDistanceMatrix.mockResolvedValueOnce({
             data: { status: 'OK', rows: [{ elements: [{ status: 'OK', duration: { value: expectedDuration } }] }] }
         });
-        await getTravelTime(origin, destination);
+        await getTravelTimeFunc(origin, destination);
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
 
         // Advance time beyond TTL
@@ -117,7 +131,7 @@ describe('getTravelTime', () => {
          mockDistanceMatrix.mockResolvedValueOnce({
             data: { status: 'OK', rows: [{ elements: [{ status: 'OK', duration: { value: expectedDuration + 5 } }] }] } // Return slightly different duration
         });
-        const duration = await getTravelTime(origin, destination);
+        const duration = await getTravelTimeFunc(origin, destination);
         expect(duration).toBe(expectedDuration + 5);
         // API should be called again
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(2); // Called once initially, once after expiry
@@ -127,7 +141,7 @@ describe('getTravelTime', () => {
         const apiError = new Error('Network error');
         mockDistanceMatrix.mockRejectedValueOnce(apiError);
 
-        const duration = await getTravelTime(origin, destination);
+        const duration = await getTravelTimeFunc(origin, destination);
 
         expect(duration).toBeNull();
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
@@ -142,7 +156,7 @@ describe('getTravelTime', () => {
             }
         });
 
-        const duration = await getTravelTime(origin, destination);
+        const duration = await getTravelTimeFunc(origin, destination);
 
         expect(duration).toBeNull();
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);
@@ -164,7 +178,7 @@ describe('getTravelTime', () => {
             }
         });
 
-        const duration = await getTravelTime(origin, destination);
+        const duration = await getTravelTimeFunc(origin, destination);
 
         expect(duration).toBeNull();
         expect(mockDistanceMatrix).toHaveBeenCalledTimes(1);

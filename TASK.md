@@ -91,22 +91,22 @@ This document tracks the development tasks for the dynamic job scheduling system
     *   *Note:* Integration tests involving the actual microservice might be needed separately.
     *   [ ] Follow sequential test order for troubleshooting:
         *   [ ] **Supabase Data Fetching (`tests/supabase/`)**
-            *   [ ] `jobs.test.ts`
-            *   [ ] `technicians.test.ts`
-            *   [ ] `orders.test.ts`
+            *   [X] `jobs.test.ts`
+            *   [X] `technicians.test.ts`
+            *   [X] `orders.test.ts`
             *   [ ] `equipment.test.ts`
-        *   [ ] **Google Maps (`tests/google/`)**
-            *   [ ] `maps.test.ts`
+        *   [X] **Google Maps (`tests/google/`)**
+            *   [X] `maps.test.ts`
         *   [ ] **Scheduler Logic (Pre-Payload) (`tests/scheduler/`)**
-            *   [ ] `availability.test.ts`
-            *   [ ] `bundling.test.ts`
+            *   [ ] `availability.test.ts` **NYI**
+            *   [X] `bundling.test.ts`
             *   [ ] `eligibility.test.ts`
         *   [ ] **Optimization Payload & Call (`tests/scheduler/`)**
             *   [ ] `payload.test.ts`
             *   [ ] `optimize.test.ts`
         *   [ ] **Result Processing & DB Update (`tests/scheduler/` & `tests/db/`)**
             *   [ ] `results.test.ts`
-            *   [ ] `update.test.ts` (`tests/db/`)
+            *   [X] `update.test.ts` (`tests/db/`)
 
 *   **[ ] Documentation & Finalization** - (Est: 2h) - {Date}
     *   [ ] Update `README.md` with setup instructions, how to run, and overview.

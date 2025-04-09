@@ -17,7 +17,6 @@ alwaysApply: true
 -**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions; never assume what our database calls will return, and always check with query to validate expected data formats.
 - **Add new sub-tasks or TODOs discovered during development** to `TASK.md` under a “Discovered During Work” section, especially for anything where placeholders are made that will be addressed later.
 -**Stop regularly to update the `CHANGELOG.md` and other documentation** when significant changes are made, or revisions to our approach come up, including notes of why the changes were made, and their locations.
-- **Stop the conversation to have the user manually run tests** instead of trying to run them in the integrated IDE terminal.
 
 ### 🧱 Code Structure & Modularity
 - **Never create a file longer than 500 lines of code.** If a file approaches this limit, refactor by splitting it into modules or helper files.
