@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosResponse } from 'axios';
 import { 
     OptimizationRequestPayload, 
     OptimizationResponsePayload 
@@ -25,8 +25,8 @@ export async function callOptimizationService(
     console.log(`Sending optimization request to: ${serviceUrl}`);
 
     try {
-        const response = await axios.post<OptimizationResponsePayload>(
-            serviceUrl,
+        const response: AxiosResponse<OptimizationResponsePayload> = await axios.post<OptimizationResponsePayload>(
+            serviceUrl!,
             payload,
             {
                 headers: { 'Content-Type': 'application/json' },
@@ -51,7 +51,7 @@ export async function callOptimizationService(
         // Return the successful (or partial) response data
         return response.data;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Error calling optimization service:');
         if (axios.isAxiosError(error)) {
             console.error(`Status: ${error.response?.status}`);
@@ -61,10 +61,14 @@ export async function callOptimizationService(
                 `HTTP error calling optimization service: ${error.response?.status} - ${error.message}. ` +
                 `Check microservice logs at ${serviceUrl}.`
             );
-        } else {
+        } else if (error instanceof Error) {
             // Non-Axios error (e.g., network issue before request sent)
             console.error(error);
             throw new Error(`Network or other error calling optimization service: ${error.message}`);
+        } else {
+             // Handle cases where the caught object is not an Error
+             console.error('An unexpected non-Error type was caught:', error);
+             throw new Error('An unexpected error occurred while calling the optimization service.');
         }
     }
 }

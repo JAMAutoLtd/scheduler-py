@@ -4,7 +4,8 @@ import {
     SchedulableItem, 
     Address,
     JobBundle,
-    SchedulableJob
+    SchedulableJob,
+    TechnicianAvailability
 } from '../types/database.types';
 import {
     OptimizationLocation,
@@ -16,6 +17,7 @@ import {
 } from '../types/optimization.types';
 import { getTravelTime } from '../google/maps';
 import { LatLngLiteral } from '@googlemaps/google-maps-services-js';
+import { WORK_END_HOUR_UTC, WORK_END_MINUTE_UTC } from './availability'; // Import constants
 
 const DEFAULT_DEPOT_LOCATION: LatLngLiteral = { lat: 40.0, lng: -75.0 }; // Example: Replace with actual depot/base coords
 
@@ -37,19 +39,22 @@ function getItemId(item: SchedulableItem): string {
 /**
  * Prepares the complete payload required by the optimization microservice.
  *
- * @param {Technician[]} technicians - Array of available technicians (with availability calculated).
+ * @param {Technician[]} technicians - Array of available technicians (with availability calculated for today).
  * @param {SchedulableItem[]} items - Array of schedulable jobs/bundles (with eligibility calculated).
  * @param {Job[]} fixedTimeJobs - Array of jobs that have a fixed schedule time.
+ * @param {TechnicianAvailability[]} [technicianAvailability] - Optional. Availability details for a specific future day (from calculateAvailabilityForDay).
  * @returns {Promise<OptimizationRequestPayload>} The payload object.
  */
 export async function prepareOptimizationPayload(
     technicians: Technician[],
     items: SchedulableItem[],
     fixedTimeJobs: Job[],
+    technicianAvailability?: TechnicianAvailability[]
 ): Promise<OptimizationRequestPayload> {
-    console.log('Preparing optimization payload...');
+    console.log(`Preparing optimization payload... ${technicianAvailability ? '(for future date)' : '(for today)'}`);
     const locationsMap = new Map<string, OptimizationLocation>();
     let currentIndex = 0;
+    const itemCoordsSet = new Set<string>();
 
     // Function to add/get location and assign index
     const addOrGetLocation = (id: string | number, coords: LatLngLiteral): OptimizationLocation => {
@@ -61,32 +66,57 @@ export async function prepareOptimizationPayload(
         return locationsMap.get(key)!;
     };
 
-    // 1. Define Locations (Depot, Tech Starts, Items)
-    // Depot (Index 0)
+    // 1. Define Locations (Depot, Items, THEN Tech Starts)
+    // --- Stage 1: Depot (Index 0) ---
     const depotLocation = addOrGetLocation('depot', DEFAULT_DEPOT_LOCATION);
 
-    // Technician Start Locations
-    technicians.forEach(tech => {
-        const startCoords = tech.current_location || DEFAULT_DEPOT_LOCATION; // Use tech's current location or depot
-        addOrGetLocation(`tech_start_${tech.id}`, startCoords);
-    });
-
-    // Item Locations
+    // --- Stage 2: Item Locations ---
+    console.log("Processing item locations...");
     items.forEach(item => {
-        // Assert item.address exists and has coordinates - should be guaranteed by earlier steps if needed
         if (!item.address?.lat || !item.address?.lng) {
             console.error(`Item ${getItemId(item)} is missing address coordinates. Skipping.`);
-            // Potentially throw an error or filter this item out earlier
             return; 
         }
         const itemCoords: LatLngLiteral = { lat: item.address.lat, lng: item.address.lng };
+        const key = `${itemCoords.lat},${itemCoords.lng}`;
+        itemCoordsSet.add(key); // Store item coordinates
         addOrGetLocation(getItemId(item), itemCoords);
     });
+    console.log(`Processed ${itemCoordsSet.size} unique item locations.`);
 
+    // --- Stage 3: Technician Start Locations (Check for clashes) ---
+    console.log("Processing technician start locations...");
+    // Create a map for easy lookup if technicianAvailability is provided
+    const availabilityMap = new Map<number, TechnicianAvailability>();
+    if (technicianAvailability) {
+        technicianAvailability.forEach(avail => availabilityMap.set(avail.technicianId, avail));
+    }
+
+    technicians.forEach(tech => {
+        const techAvail = availabilityMap.get(tech.id);
+        // Use home location from availability if provided, otherwise use current location/depot
+        let startCoords = techAvail?.startLocation || tech.current_location || DEFAULT_DEPOT_LOCATION;
+        const originalKey = `${startCoords.lat},${startCoords.lng}`;
+
+        // Check if the exact coordinates are already used by an item
+        if (itemCoordsSet.has(originalKey)) {
+            // Perturb coordinates slightly to create a distinct location
+            const perturbation = 0.00001; // Small offset
+            const perturbedCoords = { lat: startCoords.lat + perturbation, lng: startCoords.lng };
+            console.warn(`Technician ${tech.id} start location clashes with an item location at (${startCoords.lat}, ${startCoords.lng}). Perturbing to (${perturbedCoords.lat}, ${perturbedCoords.lng}).`);
+            startCoords = perturbedCoords; // Use perturbed coords for this tech's start
+            // Note: We don't add the perturbed key back to itemCoordsSet
+        }
+        
+        // Add the (potentially perturbed) start location
+        addOrGetLocation(`tech_start_${tech.id}`, startCoords);
+    });
+
+    // --- Finalize Locations List ---
     const finalLocations = Array.from(locationsMap.values()).sort((a, b) => a.index - b.index);
-    console.log(`Defined ${finalLocations.length} unique locations for optimization.`);
+    console.log(`Defined ${finalLocations.length} unique locations for optimization (including depots/starts).`);
 
-    // 2. Calculate Travel Time Matrix
+    // 2. Calculate Travel Time Matrix (using final coordinates)
     console.log('Calculating travel time matrix...');
     const travelTimeMatrix: TravelTimeMatrix = {};
     for (let i = 0; i < finalLocations.length; i++) {
@@ -111,22 +141,49 @@ export async function prepareOptimizationPayload(
     }
     console.log('Travel time matrix calculated.');
 
-    // 3. Format Technicians
+    // 3. Format Technicians (use final coordinates for startLocationIndex)
     const optimizationTechnicians: OptimizationTechnician[] = technicians.map(tech => {
-        const startCoords = tech.current_location || DEFAULT_DEPOT_LOCATION;
-        const startLocation = addOrGetLocation(`tech_start_${tech.id}`, startCoords); // Get existing location object
+        const techAvail = availabilityMap.get(tech.id); // Get availability details if present
+
+        // Determine start coordinates (potentially perturbed)
+        let startCoords = techAvail?.startLocation || tech.current_location || DEFAULT_DEPOT_LOCATION;
+        const originalKey = `${startCoords.lat},${startCoords.lng}`;
+        if (itemCoordsSet.has(originalKey)) {
+             const perturbation = 0.00001;
+             startCoords = { lat: startCoords.lat + perturbation, lng: startCoords.lng };
+        }
         
-        // Define end-of-day time based on the start time (assume same day)
-        const earliestStartDate = new Date(tech.earliest_availability || Date.now());
-        const latestEndDate = new Date(earliestStartDate);
-        latestEndDate.setHours(18, 30, 0, 0); // TODO: Make work hours configurable
+        // Find the location object added in Stage 3 using the potentially perturbed coords
+        const startLocation = addOrGetLocation(`tech_start_${tech.id}`, startCoords); // This will retrieve the existing entry
+        
+        // Define start and end times: Use availability details if provided, otherwise calculate for today
+        let earliestStartTimeISO: string;
+        let latestEndTimeISO: string;
+
+        if (techAvail) {
+            earliestStartTimeISO = techAvail.availabilityStartTimeISO;
+            latestEndTimeISO = techAvail.availabilityEndTimeISO;
+            console.log(`Tech ${tech.id} using future availability: ${earliestStartTimeISO} - ${latestEndTimeISO}`);
+        } else {
+            // Fallback logic for today's calculation
+            const earliestStartDate = new Date(tech.earliest_availability || Date.now());
+            const latestEndDate = new Date(earliestStartDate);
+            // Use setUTCHours to ensure end time is based on UTC day
+            // Assumes WORK_END_HOUR_UTC and WORK_END_MINUTE_UTC are defined globally or imported
+            // (They should be consistent with availability.ts)
+            // TODO: Import or define UTC work hour constants here
+            latestEndDate.setUTCHours(WORK_END_HOUR_UTC, WORK_END_MINUTE_UTC, 0, 0); // Use imported constants
+            earliestStartTimeISO = earliestStartDate.toISOString();
+            latestEndTimeISO = latestEndDate.toISOString();
+            console.log(`Tech ${tech.id} using current availability (UTC adjusted): ${earliestStartTimeISO} - ${latestEndTimeISO}`);
+        }
         
         return {
             id: tech.id,
             startLocationIndex: startLocation.index,
             endLocationIndex: depotLocation.index, // Assume all techs return to depot
-            earliestStartTimeISO: earliestStartDate.toISOString(),
-            latestEndTimeISO: latestEndDate.toISOString(),
+            earliestStartTimeISO: earliestStartTimeISO, // Use determined start time
+            latestEndTimeISO: latestEndTimeISO,       // Use determined end time
         };
     });
 

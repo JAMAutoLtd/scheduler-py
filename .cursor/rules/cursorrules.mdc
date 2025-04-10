@@ -8,9 +8,9 @@ description:
 globs: 
 alwaysApply: true
 ---
-### 🔄 Project Awareness & Context
-- **Always read `PLANNING.md` and `README.md` and`DB.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints.
-- **Check `TASK.md`** before starting a new task. If the task isn’t listed, add it with a brief description and today's date.
+### 🔄 Initial Orientation
+- **Always read `PLANNING.md`, `README.md`, `DB.md`, `TASK.md`, and `CHANGELOG.md`** at the start of a new conversation to understand the project's architecture, goals, style, and constraints, and next logical task.
+- **Read all files related to the next logical task** before starting the task, tracing the Imports and Outputs of the file to determine what specifically to read to find accurate context.
 - **Always aim to do ONE task at a time**, stopping to check in after each.
 - **Use consistent naming conventions, file structure, and architecture patterns** as described in `PLANNING.md`.
 -**Use the query tool** enabled by your MCP integration with our database when you need database information to make good development decisions; never assume what our database calls will return, and always check with query to validate expected data formats.
@@ -25,6 +25,7 @@ alwaysApply: true
 
 ### 🧪 Testing & Reliability
 - **Always create test unit tests for new features** (functions, classes, routes, etc).
+- **When mocking data for tests always use data consistent with the unit being tested** by tracing back imports from the units.
 - **After updating any logic**, check whether existing unit tests need to be updated. If so, do it.
 - **Tests should live in a `/tests` folder** mirroring the main app structure.
   - Include at least:
@@ -40,7 +41,39 @@ alwaysApply: true
 - **Use Node.js with TypeScript** as the primary language.
 - **Follow PEP8**, use type hints, and format with `black`.
 - **Use data validation**.
-- Write **docstrings for every function** using the Google style:
+- Write **docstrings for every function** using the appropriate style for the file being handled:
+
+**TypeScript Example**
+export class Statistics {
+  /**
+   * Returns the average of two numbers.
+   *
+   * @remarks
+   * This method is part of the {@link core-library#Statistics | Statistics subsystem}.
+   *
+   * @param x - The first input number
+   * @param y - The second input number
+   * @returns The arithmetic mean of `x` and `y`
+   *
+   * @beta
+   */
+  public static getAverage(x: number, y: number): number {
+    return (x + y) / 2.0;
+  }
+}
+
+**Python example**
+def complex(real=0.0, imag=0.0):
+    """Form a complex number.
+
+    Keyword arguments:
+    real -- the real part (default 0.0)
+    imag -- the imaginary part (default 0.0)
+    """
+    if imag == 0.0 and real == 0.0:
+        return complex_zero
+    ...
+
 
 ### 📚 Documentation & Explainability
 - **Update `README.md`** when new features are added, dependencies change, or setup steps are modified.

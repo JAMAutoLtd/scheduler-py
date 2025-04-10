@@ -1,5 +1,5 @@
 import { supabase } from '../../src/supabase/client'; // Adjust path as needed
-import { getRelevantJobs } from '../../src/supabase/jobs';
+import { getRelevantJobs, getJobsByStatus } from '../../src/supabase/jobs';
 import { Job, JobStatus, Address, Service } from '../../src/types/database.types';
 
 // Mock the Supabase client
@@ -62,6 +62,25 @@ const mockJobFixedTime: Job = {
     status: 'fixed_time',
     assigned_technician: 6,
     fixed_schedule_time: new Date('2024-05-10T15:00:00Z').toISOString(),
+};
+
+// Added for getJobsByStatus tests
+const mockJobOverflow: Job = {
+    ...mockJobQueued,
+    id: 4,
+    status: 'overflow',
+    assigned_technician: null, 
+    estimated_sched: null,
+    fixed_schedule_time: null,
+};
+
+const mockJobScheduledFuture: Job = {
+    ...mockJobQueued,
+    id: 5,
+    status: 'scheduled_future',
+    assigned_technician: 7,
+    estimated_sched: new Date('2024-05-11T11:00:00Z').toISOString(),
+    fixed_schedule_time: null,
 };
 
 // --- Test Suite ---
@@ -127,4 +146,79 @@ describe('Supabase Job Fetching (getRelevantJobs)', () => {
    // Note: The current implementation handles missing joined data gracefully, returning undefined.
    // A test could explicitly check this if needed, by providing mockRawData with missing/empty joins.
 
+}); 
+
+// --- Test Suite for getJobsByStatus ---
+describe('Supabase Job Fetching (getJobsByStatus)', () => {
+    // Reset mocks before each test
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockSupabaseIn.mockReset();
+    });
+
+    it('should fetch jobs matching a single status', async () => {
+        const targetStatus: JobStatus[] = ['overflow'];
+        const mockRawData = [
+            { ...mockJobOverflow, addresses: [mockAddress1], services: [mockService1] },
+        ];
+        mockSupabaseIn.mockResolvedValueOnce({ data: mockRawData, error: null });
+
+        const jobs = await getJobsByStatus(targetStatus);
+
+        expect(supabase.from).toHaveBeenCalledWith('jobs');
+        expect(supabase.from('jobs').select).toHaveBeenCalled();
+        expect(mockSupabaseIn).toHaveBeenCalledWith('status', targetStatus);
+        expect(jobs).toHaveLength(1);
+        expect(jobs[0]).toEqual(mockJobOverflow);
+        expect(jobs[0].status).toBe('overflow');
+    });
+
+    it('should fetch jobs matching multiple statuses', async () => {
+        const targetStatuses: JobStatus[] = ['overflow', 'scheduled_future'];
+        const mockRawData = [
+            { ...mockJobOverflow, addresses: [mockAddress1], services: [mockService1] },
+            { ...mockJobScheduledFuture, addresses: [mockAddress1], services: [mockService1] },
+        ];
+        mockSupabaseIn.mockResolvedValueOnce({ data: mockRawData, error: null });
+
+        const jobs = await getJobsByStatus(targetStatuses);
+
+        expect(supabase.from).toHaveBeenCalledWith('jobs');
+        expect(supabase.from('jobs').select).toHaveBeenCalled();
+        expect(mockSupabaseIn).toHaveBeenCalledWith('status', targetStatuses);
+        expect(jobs).toHaveLength(2);
+        expect(jobs.map(j => j.status)).toEqual(expect.arrayContaining(targetStatuses));
+        expect(jobs.find(j => j.id === mockJobOverflow.id)).toEqual(mockJobOverflow);
+        expect(jobs.find(j => j.id === mockJobScheduledFuture.id)).toEqual(mockJobScheduledFuture);
+    });
+
+    it('should return an empty array immediately if statuses array is empty', async () => {
+        const jobs = await getJobsByStatus([]);
+        expect(jobs).toEqual([]);
+        // Check that Supabase client was NOT called
+        expect(supabase.from).not.toHaveBeenCalled();
+        expect(mockSupabaseIn).not.toHaveBeenCalled();
+    });
+
+    it('should return an empty array when no jobs match the specified statuses', async () => {
+        const targetStatus: JobStatus[] = ['cancelled'];
+        mockSupabaseIn.mockResolvedValueOnce({ data: [], error: null });
+
+        const jobs = await getJobsByStatus(targetStatus);
+
+        expect(jobs).toEqual([]);
+        expect(supabase.from).toHaveBeenCalledWith('jobs');
+        expect(mockSupabaseIn).toHaveBeenCalledWith('status', targetStatus);
+    });
+
+    it('should throw an error when Supabase returns an error', async () => {
+        const targetStatus: JobStatus[] = ['overflow'];
+        const mockError = { message: 'Fetch by status failed', details: 'DB error', code: '501' };
+        mockSupabaseIn.mockResolvedValueOnce({ data: null, error: mockError });
+
+        await expect(getJobsByStatus(targetStatus)).rejects.toThrow('Failed to fetch jobs by status: Fetch by status failed');
+
+        expect(supabase.from).toHaveBeenCalledWith('jobs');
+        expect(mockSupabaseIn).toHaveBeenCalledWith('status', targetStatus);
+    });
 }); 

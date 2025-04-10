@@ -6,7 +6,8 @@ import {
     Address,
     JobBundle,
     SchedulableJob,
-    JobStatus
+    JobStatus,
+    TechnicianAvailability
 } from '../../src/types/database.types';
 import { 
     OptimizationRequestPayload, 
@@ -32,19 +33,22 @@ const MOCK_ERROR_PENALTY = 999999; // Matches payload.ts
 const address1: Address = { id: 101, street_address: '123 Main St', lat: 40.1, lng: -75.1 };
 const address2: Address = { id: 102, street_address: '456 Oak Ave', lat: 40.2, lng: -75.2 };
 const address3: Address = { id: 103, street_address: '789 Pine Ln', lat: 40.3, lng: -75.3 };
+const homeAddress1: Address = { id: 201, street_address: '1 Home Pl', lat: 40.01, lng: -75.01 };
+const homeAddress2: Address = { id: 202, street_address: '2 Home Ave', lat: 40.02, lng: -75.02 };
 
-// Mock Technicians (with availability and location)
-const techStartTime = new Date();
-techStartTime.setHours(8, 0, 0, 0);
+// Mock Technicians (with availability and location) - USE UTC ISO STRINGS
+const techStartTimeISO = '2024-07-26T09:00:00.000Z'; // Example UTC time
 const tech1: Technician = { 
     id: 1, user_id: 'uuid1', assigned_van_id: 10, workload: null, 
     current_location: { lat: 40.05, lng: -75.05 }, // Near depot
-    earliest_availability: techStartTime.toISOString()
+    earliest_availability: techStartTimeISO, 
+    home_location: { lat: homeAddress1.lat!, lng: homeAddress1.lng! } // Added home location with non-null assertions
 };
 const tech2: Technician = { 
     id: 2, user_id: 'uuid2', assigned_van_id: 11, workload: null,
     current_location: { lat: 40.15, lng: -75.15 }, // Near address 1
-    earliest_availability: techStartTime.toISOString()
+    earliest_availability: techStartTimeISO,
+    home_location: { lat: homeAddress2.lat!, lng: homeAddress2.lng! } // Added home location with non-null assertions
 };
 const technicians = [tech1, tech2];
 
@@ -60,21 +64,20 @@ const schedItemMissingCoords: SchedulableJob = { is_bundle: false, job: job4_mis
 
 const items: SchedulableItem[] = [schedItem1, schedItemBundle, schedItemMissingCoords];
 
-// Mock Fixed Time Job
-const fixedTime = new Date(techStartTime);
-fixedTime.setHours(14, 0, 0, 0);
+// Mock Fixed Time Job - USE UTC ISO STRING
+const fixedTimeISO = '2024-07-26T14:00:00.000Z'; 
 const fixedJob: Job = { 
     id: 1, // Matches job1 
     order_id: 100, address_id: 101, priority: 10, status: 'fixed_time', job_duration: 30, service_id: 1, address: address1, 
     assigned_technician: 1, // Assume fixed assignment
     fixed_assignment: true, 
-    fixed_schedule_time: fixedTime.toISOString(),
+    fixed_schedule_time: fixedTimeISO,
     estimated_sched: null, notes: null, requested_time: null, technician_notes: null
 };
 const unrelatedFixedJob: Job = { // This job isn't in the main 'items' list
      id: 5, 
      order_id: 105, address_id: 101, priority: 10, status: 'fixed_time', job_duration: 30, service_id: 1, address: address1, 
-     assigned_technician: 1, fixed_assignment: true, fixed_schedule_time: fixedTime.toISOString(),
+     assigned_technician: 1, fixed_assignment: true, fixed_schedule_time: fixedTimeISO,
      estimated_sched: null, notes: null, requested_time: null, technician_notes: null
 };
 
@@ -111,10 +114,11 @@ describe('prepareOptimizationPayload', () => {
 
         // Check indexes and coordinates
         expect(locations[0]).toEqual({ id: 'depot', index: 0, coords: DEFAULT_DEPOT_COORDS });
-        expect(locations[1]).toEqual({ id: 'tech_start_1', index: 1, coords: tech1.current_location });
-        expect(locations[2]).toEqual({ id: 'tech_start_2', index: 2, coords: tech2.current_location });
-        expect(locations[3]).toEqual({ id: `job_${job1.id}`, index: 3, coords: { lat: address1.lat, lng: address1.lng } });
-        expect(locations[4]).toEqual({ id: `bundle_${schedItemBundle.order_id}`, index: 4, coords: { lat: address2.lat, lng: address2.lng } });
+        expect(locations[1]).toEqual({ id: `job_${job1.id}`, index: 1, coords: { lat: address1.lat, lng: address1.lng } });
+        expect(locations[2]).toEqual({ id: `bundle_${schedItemBundle.order_id}`, index: 2, coords: { lat: address2.lat, lng: address2.lng } });
+        // Tech start locations are added *after* items, so their indices will be 3 and 4
+        expect(locations[3]).toEqual({ id: 'tech_start_1', index: 3, coords: tech1.current_location });
+        expect(locations[4]).toEqual({ id: 'tech_start_2', index: 4, coords: tech2.current_location });
     });
 
     it('should skip items with missing coordinates', async () => {
@@ -122,7 +126,7 @@ describe('prepareOptimizationPayload', () => {
         const locations = payload.locations;
         const optItems = payload.items;
 
-        // Expected locations: Depot, Tech1 Start, Tech2 Start, Item1 (Job1), Item2 (Bundle) - Item 4 skipped
+        // Expected locations: Depot, Item1 (Job1), Item2 (Bundle), Tech1 Start, Tech2 Start - Item 4 skipped
         expect(locations).toHaveLength(5);
         expect(locations.find(loc => loc.id === `job_${job4_missing_coords.id}`)).toBeUndefined();
 
@@ -174,7 +178,7 @@ describe('prepareOptimizationPayload', () => {
         expect(matrix[depotIndex][jobBundleIndex]).toBe(900);
      });
 
-    it('should format technicians correctly', async () => {
+    it('should format technicians correctly (using default availability)', async () => {
         const payload = await prepareOptimizationPayload(technicians, [schedItem1, schedItemBundle], []);
         const optTechs = payload.technicians;
         const locations = payload.locations;
@@ -182,18 +186,20 @@ describe('prepareOptimizationPayload', () => {
         expect(optTechs).toHaveLength(2);
 
         const tech1Data = optTechs.find(t => t.id === tech1.id);
+        const tech1LocationIndex = locations.find(l=>l.id === 'tech_start_1')?.index;
         expect(tech1Data).toBeDefined();
-        expect(tech1Data?.startLocationIndex).toBe(locations.find(l=>l.id === 'tech_start_1')?.index);
+        expect(tech1Data?.startLocationIndex).toBe(tech1LocationIndex);
         expect(tech1Data?.endLocationIndex).toBe(locations.find(l=>l.id === 'depot')?.index); 
         expect(tech1Data?.earliestStartTimeISO).toBe(tech1.earliest_availability);
-        // Check default end time (should be 18:30 on the same day as start)
+        // Check default end time (should be 18:30 UTC on the same day as start)
         const expectedEndTime = new Date(tech1.earliest_availability!); 
-        expectedEndTime.setHours(18, 30, 0, 0);
+        expectedEndTime.setUTCHours(18, 30, 0, 0); // USE UTC!
         expect(tech1Data?.latestEndTimeISO).toBe(expectedEndTime.toISOString());
 
         const tech2Data = optTechs.find(t => t.id === tech2.id);
+        const tech2LocationIndex = locations.find(l=>l.id === 'tech_start_2')?.index;
         expect(tech2Data).toBeDefined();
-        expect(tech2Data?.startLocationIndex).toBe(locations.find(l=>l.id === 'tech_start_2')?.index);
+        expect(tech2Data?.startLocationIndex).toBe(tech2LocationIndex);
     });
 
     it('should format items correctly', async () => {
@@ -205,16 +211,18 @@ describe('prepareOptimizationPayload', () => {
 
         // Check Job 1
         const item1Data = optItems.find(i => i.id === `job_${job1.id}`);
+        const job1LocationIndex = locations.find(l => l.id === `job_${job1.id}`)?.index;
         expect(item1Data).toBeDefined();
-        expect(item1Data?.locationIndex).toBe(locations.find(l => l.id === `job_${job1.id}`)?.index);
+        expect(item1Data?.locationIndex).toBe(job1LocationIndex);
         expect(item1Data?.durationSeconds).toBe(schedItem1.duration * 60); // 30 * 60 = 1800
         expect(item1Data?.priority).toBe(schedItem1.priority);
         expect(item1Data?.eligibleTechnicianIds).toEqual(schedItem1.eligible_technician_ids);
 
         // Check Bundle
         const itemBundleData = optItems.find(i => i.id === `bundle_${schedItemBundle.order_id}`);
+        const bundleLocationIndex = locations.find(l => l.id === `bundle_${schedItemBundle.order_id}`)?.index;
         expect(itemBundleData).toBeDefined();
-        expect(itemBundleData?.locationIndex).toBe(locations.find(l => l.id === `bundle_${schedItemBundle.order_id}`)?.index);
+        expect(itemBundleData?.locationIndex).toBe(bundleLocationIndex);
         expect(itemBundleData?.durationSeconds).toBe(schedItemBundle.total_duration * 60); // 75 * 60 = 4500
         expect(itemBundleData?.priority).toBe(schedItemBundle.priority);
         expect(itemBundleData?.eligibleTechnicianIds).toEqual(schedItemBundle.eligible_technician_ids);
@@ -239,6 +247,54 @@ describe('prepareOptimizationPayload', () => {
          const payload = await prepareOptimizationPayload(technicians, [schedItem1, schedItemBundle], [jobWithMissingTime]);
          const constraints = payload.fixedConstraints;
          expect(constraints).toHaveLength(0);
+    });
+
+    // New Test Case for TechnicianAvailability
+    it('should use technicianAvailability when provided', async () => {
+        const futureStartTimeISO = '2024-07-27T09:00:00.000Z';
+        const futureEndTimeISO = '2024-07-27T18:30:00.000Z';
+
+        const techAvail: TechnicianAvailability[] = [
+            {
+                technicianId: tech1.id,
+                availabilityStartTimeISO: futureStartTimeISO,
+                availabilityEndTimeISO: futureEndTimeISO,
+                startLocation: tech1.home_location!, // Use home location
+            },
+            {
+                technicianId: tech2.id,
+                availabilityStartTimeISO: futureStartTimeISO,
+                availabilityEndTimeISO: futureEndTimeISO,
+                startLocation: tech2.home_location!, // Use home location
+            },
+        ];
+
+        const payload = await prepareOptimizationPayload(technicians, [schedItem1, schedItemBundle], [], techAvail);
+        const optTechs = payload.technicians;
+        const locations = payload.locations;
+
+        expect(optTechs).toHaveLength(2);
+
+        // Verify Tech 1 uses availability data
+        const tech1Data = optTechs.find(t => t.id === tech1.id);
+        const tech1HomeLocationIndex = locations.find(l => l.id === 'tech_start_1' && l.coords.lat === tech1.home_location!.lat && l.coords.lng === tech1.home_location!.lng)?.index;
+        expect(tech1Data).toBeDefined();
+        expect(tech1Data?.startLocationIndex).toBe(tech1HomeLocationIndex); // Should be index of home location
+        expect(tech1Data?.earliestStartTimeISO).toBe(futureStartTimeISO);
+        expect(tech1Data?.latestEndTimeISO).toBe(futureEndTimeISO);
+
+        // Verify Tech 2 uses availability data
+        const tech2Data = optTechs.find(t => t.id === tech2.id);
+        const tech2HomeLocationIndex = locations.find(l => l.id === 'tech_start_2' && l.coords.lat === tech2.home_location!.lat && l.coords.lng === tech2.home_location!.lng)?.index;
+        expect(tech2Data).toBeDefined();
+        expect(tech2Data?.startLocationIndex).toBe(tech2HomeLocationIndex); // Should be index of home location
+        expect(tech2Data?.earliestStartTimeISO).toBe(futureStartTimeISO);
+        expect(tech2Data?.latestEndTimeISO).toBe(futureEndTimeISO);
+        
+        // Also verify the locations list includes the home locations for techs
+        expect(locations.find(l => l.id === 'tech_start_1' && l.coords.lat === tech1.home_location!.lat)).toBeDefined();
+        expect(locations.find(l => l.id === 'tech_start_2' && l.coords.lat === tech2.home_location!.lat)).toBeDefined();
+
     });
 
 }); 

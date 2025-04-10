@@ -3,6 +3,9 @@ import { supabase } from './supabase/client';
 
 /**
  * Main entry point for the scheduler application.
+ *
+ * This function initializes the scheduler process by calling the `runFullReplan`
+ * function and handles the final exit status.
  */
 async function main() {
   console.log('Starting scheduler process...');

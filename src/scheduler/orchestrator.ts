@@ -1,119 +1,327 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getActiveTechnicians } from '../supabase/technicians';
-import { getRelevantJobs } from '../supabase/jobs';
-import { Job, JobStatus, Technician } from '../types/database.types';
-import { calculateTechnicianAvailability } from './availability';
+import { getRelevantJobs, getJobsByStatus } from '../supabase/jobs';
+import { Job, JobStatus, Technician, JobBundle, SchedulableItem, TechnicianAvailability, Address } from '../types/database.types';
+import { calculateTechnicianAvailability, calculateAvailabilityForDay } from './availability';
 import { bundleQueuedJobs } from './bundling';
 import { determineTechnicianEligibility } from './eligibility';
 import { prepareOptimizationPayload } from './payload';
 import { callOptimizationService } from './optimize';
-import { processOptimizationResults } from './results';
-import { updateJobStatuses } from '../db/update';
-import { supabase } from '../supabase/client'; // Assuming supabase client is exported from here
+import { processOptimizationResults, ScheduledJobUpdate } from './results';
+import { updateJobs, JobUpdateOperation } from '../db/update';
 
 const LOCKED_JOB_STATUSES: JobStatus[] = ['en_route', 'in_progress', 'fixed_time'];
-const SCHEDULABLE_JOB_STATUS: JobStatus = 'queued';
-const FIXED_TIME_JOB_STATUS: JobStatus = 'fixed_time';
+const INITIAL_SCHEDULABLE_STATUS: JobStatus = 'queued';
+const PENDING_REVIEW_STATUS: JobStatus = 'pending_review';
+const FINAL_SUCCESS_STATUS: JobStatus = 'queued';
+const MAX_OVERFLOW_ATTEMPTS = 4;
+
+interface FinalAssignment {
+    technicianId: number;
+    estimatedSchedISO: string;
+}
 
 /**
- * Orchestrates the entire job replanning process.
+ * Handles both individual jobs and bundles.
+ * Requires a map populated with the SchedulableItems that were *eligible* and sent to the optimizer for the relevant pass.
  *
- * @param {SupabaseClient<any>} dbClient - The Supabase client instance.
- * @returns {Promise<void>} Resolves when the replan is complete, or rejects on error.
+ * @param {string[]} itemIds - Array of item IDs (e.g., 'job_123', 'bundle_45') reported as unassigned by the optimizer.
+ * @param {Map<string, SchedulableItem>} eligibleItemMap - A map where keys are item IDs and values are the corresponding SchedulableItem objects that were *eligible* for the optimization pass.
+ * @returns {Set<number>} A Set containing the unique IDs of all constituent jobs belonging to the unassigned items.
+ */
+function mapItemsToJobIds(itemIds: string[], eligibleItemMap: Map<string, SchedulableItem>): Set<number> {
+    const jobIds = new Set<number>();
+    for (const itemId of itemIds) {
+        const item = eligibleItemMap.get(itemId);
+        if (!item) {
+            console.warn(`Could not find item details for ID: ${itemId} in eligibleItemMap during mapItemsToJobIds.`);
+            continue;
+        }
+
+        if (itemId.startsWith('job_')) {
+            if ('job' in item) {
+                 const jobId = item.job.id;
+                 jobIds.add(jobId);
+            } else {
+                 console.warn(`Expected SchedulableJob but got different item type for ID: ${itemId}`);
+            }
+        } else if (itemId.startsWith('bundle_') && 'jobs' in item) {
+            item.jobs.forEach(job => jobIds.add(job.id));
+        } else {
+            console.warn(`Could not determine job IDs for item/ID: ${itemId}`);
+        }
+    }
+    return jobIds;
+}
+
+/**
+ * Orchestrates the full job replanning process for a given day and subsequent overflow days.
+ * Fetches necessary data, calculates availability, bundles jobs, determines eligibility,
+ * calls an external optimization service, processes results internally, and performs a single
+ * final database update.
+ *
+ * @param {SupabaseClient<any>} dbClient - The Supabase client instance for database interactions.
+ * @returns {Promise<void>} A promise that resolves when the replan cycle is complete or rejects if an error occurs.
+ * @throws {Error} Throws an error if a critical step fails (e.g., initial data fetch, optimization call, final DB update).
  */
 export async function runFullReplan(dbClient: SupabaseClient<any>): Promise<void> {
-  console.log('\n--- Starting Full Replan Cycle ---');
+  console.log('\n--- Starting Full Replan Cycle (Refactored Approach) ---');
+
+  let allTechnicians: Technician[] = [];
+  let jobsToPlan = new Set<number>();
+  const finalAssignments = new Map<number, FinalAssignment>();
+  const eligibleItemMapForPass = new Map<string, SchedulableItem>(); // Map used *per pass* for result mapping
+  let allFetchedJobsMap = new Map<number, Job>();
+
   try {
-    // 1. Fetch Data
-    console.log('Step 1: Fetching data from Supabase...');
-    const [technicians, allJobs] = await Promise.all([
+    // ========================================\n    // == Initial Data Fetch & Setup         ==\n    // ========================================
+    console.log('Step 0: Fetching initial technicians and relevant jobs...');
+    const [fetchedTechnicians, relevantJobsToday] = await Promise.all([
       getActiveTechnicians(),
       getRelevantJobs(),
     ]);
+    allTechnicians = fetchedTechnicians;
 
-    if (technicians.length === 0) {
+    if (allTechnicians.length === 0) {
       console.warn('No active technicians found. Aborting replan.');
       return;
     }
-    console.log(`Found ${technicians.length} technicians and ${allJobs.length} relevant jobs.`);
+    console.log(`Found ${allTechnicians.length} technicians and ${relevantJobsToday.length} relevant jobs.`);
 
-    // 2. Separate Jobs
-    console.log('Step 2: Separating locked and schedulable jobs...');
-    const lockedJobs = allJobs.filter(job => LOCKED_JOB_STATUSES.includes(job.status));
-    const schedulableJobs = allJobs.filter(job => job.status === SCHEDULABLE_JOB_STATUS);
-    const fixedTimeJobs = lockedJobs.filter(job => job.status === FIXED_TIME_JOB_STATUS && job.fixed_schedule_time);
-    console.log(`Found ${lockedJobs.length} locked jobs, ${schedulableJobs.length} schedulable jobs, ${fixedTimeJobs.length} with fixed times.`);
+    relevantJobsToday.forEach(job => {
+        allFetchedJobsMap.set(job.id, job);
+        if (job.status === INITIAL_SCHEDULABLE_STATUS) {
+            jobsToPlan.add(job.id);
+        }
+    });
 
-    if (schedulableJobs.length === 0) {
-      console.log('No queued jobs to schedule. Replan cycle complete.');
-      return;
+    const lockedJobsToday = relevantJobsToday.filter(job => LOCKED_JOB_STATUSES.includes(job.status));
+    const fixedTimeJobsToday = lockedJobsToday.filter(job => job.status === 'fixed_time' && job.fixed_schedule_time);
+    console.log(`Initial state: ${jobsToPlan.size} jobs to plan, ${lockedJobsToday.length} locked, ${fixedTimeJobsToday.length} fixed time.`);
+
+    // ========================================\n    // == Pass 1: Plan for Today             ==\n    // ========================================
+    if (jobsToPlan.size > 0) {
+        console.log('\n--- Pass 1: Planning for Today ---');
+        eligibleItemMapForPass.clear(); // Ensure map is clear for this pass
+
+        console.log('Step 1.1: Calculating technician availability for today...');
+        calculateTechnicianAvailability(allTechnicians, lockedJobsToday);
+
+        const jobsForPass1Details = Array.from(jobsToPlan).map(id => allFetchedJobsMap.get(id)).filter((job): job is Job => !!job);
+
+        console.log('Step 1.2: Bundling jobs for today...');
+        const bundledItemsToday: SchedulableItem[] = bundleQueuedJobs(jobsForPass1Details);
+
+        console.log('Step 1.3: Determining eligibility for today...');
+        const eligibleItemsToday: SchedulableItem[] = await determineTechnicianEligibility(bundledItemsToday, allTechnicians);
+        eligibleItemsToday.forEach(item => eligibleItemMapForPass.set('job' in item ? `job_${item.job.id}` : `bundle_${item.order_id}`, item));
+
+        if (eligibleItemsToday.length > 0) {
+            console.log('Step 1.4: Preparing optimization payload for today...');
+            const optimizationPayloadToday = await prepareOptimizationPayload(allTechnicians, eligibleItemsToday, fixedTimeJobsToday); // Pass eligible items
+
+            if (optimizationPayloadToday.items.length > 0) {
+                 console.log('Step 1.5: Calling optimization microservice for today...');
+                 const optimizationResponseToday = await callOptimizationService(optimizationPayloadToday);
+
+                 console.log('Step 1.6: Processing optimization results for today...');
+                 const processedResultsToday = processOptimizationResults(optimizationResponseToday);
+
+                 console.log('Step 1.7: Updating internal state...');
+                 // Process scheduled items using ScheduledJobUpdate
+                 processedResultsToday.scheduledJobs.forEach((update: ScheduledJobUpdate) => {
+                     if (jobsToPlan.has(update.jobId)) {
+                         finalAssignments.set(update.jobId, {
+                             technicianId: update.technicianId,
+                             estimatedSchedISO: update.estimatedSchedISO,
+                         });
+                         jobsToPlan.delete(update.jobId);
+                     } else {
+                          console.warn(`Job ${update.jobId} scheduled by optimizer but was not in \'jobsToPlan\' set.`);
+                     }
+                 });
+
+                 // Process unassigned items using mapItemsToJobIds and the map populated with *eligible* items
+                 const unassignedJobIdsToday = mapItemsToJobIds(processedResultsToday.unassignedItemIds, eligibleItemMapForPass);
+                 unassignedJobIdsToday.forEach(jobId => {
+                    if (!jobsToPlan.has(jobId) && allFetchedJobsMap.get(jobId)?.status === INITIAL_SCHEDULABLE_STATUS) {
+                        console.warn(`Job ${jobId} reported unassigned but was missing from \'jobsToPlan\' set. Adding back.`);
+                        jobsToPlan.add(jobId); // Ensure it remains for overflow/pending
+                    }
+                 });
+                 console.log(`Pass 1 Results: ${finalAssignments.size} jobs assigned, ${jobsToPlan.size} jobs remain.`);
+
+            } else {
+                console.log('No items could be prepared for optimization payload for today.');
+            }
+        } else {
+            console.log('No eligible items found for today after bundling and eligibility checks.');
+        }
+    } else {
+        console.log('No initial jobs to plan for today.');
     }
+    console.log(`--- Pass 1 Complete. ${jobsToPlan.size} jobs remaining to plan. ---`);
 
-    // 3. Calculate Availability
-    console.log('Step 3: Calculating technician availability...');
-    calculateTechnicianAvailability(technicians, lockedJobs);
+    // ========================================\n    // == Pass 2+: Plan for Overflow        ==\n    // ========================================
+    let loopCount = 0;
+    let basePlanningDate = new Date();
 
-    // 4. Bundle Jobs
-    console.log('Step 4: Bundling queued jobs...');
-    const bundledItems = bundleQueuedJobs(schedulableJobs);
+    while (jobsToPlan.size > 0 && loopCount < MAX_OVERFLOW_ATTEMPTS) {
+        loopCount++;
+        const currentPlanningDate = new Date(basePlanningDate);
+        currentPlanningDate.setUTCDate(basePlanningDate.getUTCDate() + loopCount);
+        const planningDateStr = currentPlanningDate.toISOString().split('T')[0];
+        console.log(`\n--- Overflow Pass ${loopCount}: Planning for ${planningDateStr} ---`);
+        eligibleItemMapForPass.clear(); // Clear map for this pass
 
-    // 5. Determine Eligibility
-    console.log('Step 5: Determining technician eligibility...');
-    const eligibleItems = await determineTechnicianEligibility(bundledItems, technicians);
+        console.log(`Step ${loopCount}.1: Fetching technicians with home locations...`);
+        const techsForLoop = await getActiveTechnicians();
+        if (techsForLoop.length === 0) {
+            console.warn(`No active technicians found for ${planningDateStr}. Cannot plan overflow. Stopping loop.`);
+            break;
+        }
 
-    if (eligibleItems.length === 0) {
-      console.log('No eligible items remaining after eligibility check. Replan cycle complete.');
-      // Potentially update originally queued jobs to 'pending_review' here if needed
-      return;
+        const jobsForLoopDetails = Array.from(jobsToPlan)
+            .map(id => allFetchedJobsMap.get(id))
+            .filter((job): job is Job => {
+                if (!job) console.warn(`Missing job detail in allFetchedJobsMap for ID during overflow pass ${loopCount}`);
+                return !!job;
+            });
+
+        if (jobsForLoopDetails.length === 0 && jobsToPlan.size > 0) {
+             console.warn(`Job IDs exist in jobsToPlan but details not found in allFetchedJobsMap for ${planningDateStr}. Ending loop.`);
+             jobsToPlan.clear();
+             break;
+        }
+         console.log(`Attempting to plan ${jobsToPlan.size} remaining jobs.`);
+
+
+        console.log(`Step ${loopCount}.2: Calculating availability for ${planningDateStr}...`);
+        const availabilityThisDay: TechnicianAvailability[] = calculateAvailabilityForDay(techsForLoop, currentPlanningDate);
+        if (availabilityThisDay.length === 0) {
+            console.log(`No technician availability on ${planningDateStr} (Weekend/Holiday?). Skipping day.`);
+            continue;
+        }
+        const availableTechIdsThisDay = new Set(availabilityThisDay.map(a => a.technicianId));
+        const availableTechsThisDay = techsForLoop.filter(t => availableTechIdsThisDay.has(t.id));
+        console.log(`Found ${availableTechsThisDay.length} technicians available on ${planningDateStr}.`);
+
+        console.log(`Step ${loopCount}.3: Bundling remaining jobs for ${planningDateStr}...`);
+        const bundledItemsLoop: SchedulableItem[] = bundleQueuedJobs(jobsForLoopDetails);
+
+        console.log(`Step ${loopCount}.4: Determining eligibility for ${planningDateStr}...`);
+        const eligibleItemsLoop: SchedulableItem[] = await determineTechnicianEligibility(bundledItemsLoop, availableTechsThisDay);
+        eligibleItemsLoop.forEach(item => eligibleItemMapForPass.set('job' in item ? `job_${item.job.id}` : `bundle_${item.order_id}`, item));
+
+        if (eligibleItemsLoop.length === 0) {
+            console.log(`No eligible items for ${planningDateStr} after bundling and eligibility. Continuing loop.`);
+            continue;
+        }
+
+        console.log(`Step ${loopCount}.5: Preparing optimization payload for ${planningDateStr}...`);
+        const optimizationPayloadLoop = await prepareOptimizationPayload(availableTechsThisDay, eligibleItemsLoop, [], availabilityThisDay); // Pass eligible items
+
+        if (optimizationPayloadLoop.items.length === 0) {
+            console.log(`No items could be prepared for optimization for ${planningDateStr}. Continuing loop.`);
+            continue;
+        }
+
+        console.log(`Step ${loopCount}.6: Calling optimization microservice for ${planningDateStr}...`);
+        const optimizationResponseLoop = await callOptimizationService(optimizationPayloadLoop);
+
+        console.log(`Step ${loopCount}.7: Processing optimization results for ${planningDateStr}...`);
+        const processedResultsLoop = processOptimizationResults(optimizationResponseLoop);
+
+        console.log(`Step ${loopCount}.8: Updating internal state...`);
+        // Process scheduled items using ScheduledJobUpdate
+        processedResultsLoop.scheduledJobs.forEach((update: ScheduledJobUpdate) => {
+             if (jobsToPlan.has(update.jobId)) {
+                 finalAssignments.set(update.jobId, {
+                     technicianId: update.technicianId,
+                     estimatedSchedISO: update.estimatedSchedISO,
+                 });
+                 jobsToPlan.delete(update.jobId);
+             } else {
+                  console.warn(`Job ${update.jobId} scheduled by optimizer in overflow pass but was not in \'jobsToPlan\' set.`);
+             }
+        });
+
+        // Process unassigned items using mapItemsToJobIds and the map populated with *eligible* items
+        const unassignedJobIdsLoop = mapItemsToJobIds(processedResultsLoop.unassignedItemIds, eligibleItemMapForPass);
+        unassignedJobIdsLoop.forEach(jobId => {
+           if (!jobsToPlan.has(jobId) && allFetchedJobsMap.get(jobId)?.status === INITIAL_SCHEDULABLE_STATUS) {
+               console.warn(`Job ${jobId} reported unassigned in overflow pass but was missing from \'jobsToPlan\' set. Adding back.`);
+               jobsToPlan.add(jobId); // Ensure it remains for pending review
+           }
+        });
+
+        console.log(`--- Overflow Pass ${loopCount} Complete. ${jobsToPlan.size} jobs remaining to plan. ---`);
+    } // End while loop
+
+    // ========================================\n    // == Final Database Update             ==\n    // ========================================
+    console.log('\n--- Final Database Update ---');
+    const finalUpdates: JobUpdateOperation[] = [];
+
+    finalAssignments.forEach((assignment, jobId) => {
+        finalUpdates.push({
+            jobId: jobId,
+            data: {
+                status: FINAL_SUCCESS_STATUS, // 'queued'
+                assigned_technician: assignment.technicianId,
+                estimated_sched: assignment.estimatedSchedISO,
+            }
+        });
+    });
+
+    jobsToPlan.forEach(jobId => {
+        finalUpdates.push({
+            jobId: jobId,
+            data: {
+                status: PENDING_REVIEW_STATUS,
+                assigned_technician: null,
+                estimated_sched: null,
+            }
+        });
+    });
+
+    if (finalUpdates.length > 0) {
+        console.log(`Applying final updates: ${finalAssignments.size} jobs to \'${FINAL_SUCCESS_STATUS}\', ${jobsToPlan.size} jobs to \'${PENDING_REVIEW_STATUS}\'.`);
+        await updateJobs(dbClient, finalUpdates);
+    } else {
+        console.log('No final database updates required (no jobs planned or failed).');
     }
-
-    // 6. Prepare Payload
-    console.log('Step 6: Preparing optimization payload (including travel times)...');
-    const optimizationPayload = await prepareOptimizationPayload(technicians, eligibleItems, fixedTimeJobs);
-
-    if (optimizationPayload.items.length === 0) {
-        console.log('No items could be prepared for optimization (e.g., missing coords). Replan cycle complete.');
-        // Handle jobs that were in eligibleItems but not in payload.items (likely set to pending_review)
-        // This might require comparing eligibleItems IDs with payload.items IDs
-        // For now, just exit.
-        return;
-    }
-
-    // 7. Call Optimization Service
-    console.log('Step 7: Calling optimization microservice...');
-    const optimizationResponse = await callOptimizationService(optimizationPayload);
-
-    // 8. Process Results (Handled within updateJobStatuses for now)
-    // const processedResults = processOptimizationResults(optimizationResponse);
-
-    // 9. Update Database
-    console.log('Step 9: Updating database with optimization results...');
-    await updateJobStatuses(dbClient, optimizationResponse);
 
     console.log('--- Full Replan Cycle Completed Successfully ---');
 
   } catch (error) {
     console.error('--- Full Replan Cycle Failed ---');
-    console.error(error);
-    // Add more robust error handling/reporting as needed
-    // Potentially update job statuses to a specific 'error' or 'retry' state
-    throw error; // Re-throw to indicate failure
+    if (error instanceof Error) {
+        console.error(`Error Message: ${error.message}`);
+        console.error(`Error Stack: ${error.stack}`);
+    } else {
+        console.error('An unexpected error occurred:', error);
+    }
+    throw error; // Re-throw
   }
 }
 
-// Example of how to run it (e.g., from index.ts or a trigger script)
+/* Example run block remains the same */
 /*
 import { runFullReplan } from './scheduler/orchestrator';
 import { supabase } from './supabase/client';
 
 async function main() {
+  if (!supabase) {
+      console.error("Supabase client is not initialized. Cannot run replan.");
+      process.exit(1);
+  }
   try {
     await runFullReplan(supabase);
+    console.log("Main execution finished.");
   } catch (error) {
-    console.error('Main execution failed:', error);
-    process.exit(1); // Exit with error code
+    console.error('Main execution failed.');
+    process.exit(1);
   }
 }
-
-main();
+// main();
 */ 

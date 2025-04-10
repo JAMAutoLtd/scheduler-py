@@ -2,144 +2,92 @@ import { SupabaseClient } from '@supabase/supabase-js';
 // NOTE: While the SupabaseClient is often typed with an auto-generated `Database` type,
 // this function uses manually defined types from this project for the update payload.
 // Ensure consistency if the auto-generated type is used elsewhere.
-import { Job } from '../types/database.types'; // Using manual Job interface
-import {
-    OptimizationResponsePayload,
-    TechnicianRoute,
-    RouteStop,
-} from '../types/optimization.types';
-import { PostgrestFilterBuilder } from '@supabase/postgrest-js'; // Import needed type
+import { Job, JobStatus } from '../types/database.types'; // Using manual Job interface
 
 // Define the shape of the data used for updating jobs, derived from the manual Job interface
-type JobUpdateData = Partial<Pick<Job, 'assigned_technician' | 'estimated_sched' | 'status'>>;
+// Allows updating only specific fields relevant to scheduling outcomes.
+export type JobUpdatePayload = Partial<Pick<Job, 'assigned_technician' | 'estimated_sched' | 'status'>>;
 
-// Helper type for tracking updates along with their original IDs
-type UpdateTask = {
-    id: number | string; // Job ID or Item ID
-    type: 'scheduled' | 'overflow';
-    // Supabase query builder - explicitly typing it
-    query: PostgrestFilterBuilder<any, any, any, any, any>; // Adjust schema/table/return types if known
-};
-
-/**
- * Extracts the numeric job ID from an item ID string (e.g., "job_123" -> 123).
- * Returns null if the format is invalid.
- */
-function extractJobId(itemId: string): number | null {
-    if (itemId?.startsWith('job_')) {
-        const idPart = itemId.substring(4);
-        const jobId = parseInt(idPart, 10);
-        return !isNaN(jobId) ? jobId : null;
-    }
-    // Handle bundle IDs if they need specific DB updates (currently ignored)
-    if (itemId?.startsWith('bundle_')) {
-        console.warn(`Skipping database update for bundle ID: ${itemId}`);
-        return null;
-    }
-    console.warn(`Unrecognized item ID format for DB update: ${itemId}`);
-    return null;
+// Type for defining a single update operation
+export interface JobUpdateOperation {
+    jobId: number;
+    data: JobUpdatePayload;
 }
 
 /**
- * Updates the status of jobs in the database based on the scheduling results from the optimization service.
+ * Updates multiple jobs in the database with specific data.
  *
  * @param supabase The Supabase client instance.
- * @param results The OptimizationResponsePayload received from the optimization microservice.
- * @returns A promise that resolves when the updates are complete.
- * @throws Throws an error if any database update fails.
+ * @param updates An array of JobUpdateOperation objects, each specifying a jobId and the data to update.
+ * @returns A promise that resolves when all updates are complete.
+ * @throws Throws an error if any database update fails, summarizing the number of failures.
  */
-export async function updateJobStatuses(
+export async function updateJobs(
     supabase: SupabaseClient<any>, // Use <any> if Database type isn't available/correct
-    results: OptimizationResponsePayload
+    updates: JobUpdateOperation[]
 ): Promise<void> {
-    console.log('Updating job statuses in database based on optimization response...');
-
-    if (results.status === 'error') {
-        console.error('Optimization service reported an error, skipping database updates:', results.message);
-        throw new Error(`Optimization failed: ${results.message || 'Unknown error'}`);
-    }
-
-    const updateTasks: UpdateTask[] = [];
-
-    // Prepare updates for scheduled jobs from routes
-    results.routes.forEach((route: TechnicianRoute) => {
-        route.stops.forEach((stop: RouteStop) => {
-            const jobId = extractJobId(stop.itemId);
-            if (jobId !== null) {
-                const updateData: JobUpdateData = {
-                    assigned_technician: route.technicianId,
-                    estimated_sched: stop.startTimeISO, // Assuming startTimeISO is the correct field
-                    status: 'scheduled',
-                };
-                const query = supabase
-                    .from('jobs')
-                    .update(updateData)
-                    .eq('id', jobId); // Assuming primary key is 'id'
-                updateTasks.push({ id: jobId, type: 'scheduled', query });
-            }
-        });
-    });
-
-    // Prepare updates for overflow jobs (unassigned items)
-    (results.unassignedItemIds || []).forEach((itemId: string) => {
-        const jobId = extractJobId(itemId);
-        if (jobId !== null) {
-            const updateData: JobUpdateData = {
-                status: 'pending_review',
-                assigned_technician: null,
-                estimated_sched: null,
-            };
-            const query = supabase
-                .from('jobs')
-                .update(updateData)
-                .eq('id', jobId); // Assuming primary key is 'id'
-            updateTasks.push({ id: jobId, type: 'overflow', query });
-        }
-    });
-
-    if (updateTasks.length === 0) {
-        console.log('No job updates required based on optimization results.');
+    if (!updates || updates.length === 0) {
+        console.log('No job updates provided.');
         return;
     }
 
-    console.log(`Attempting to update ${updateTasks.filter(t => t.type === 'scheduled').length} scheduled jobs and ${updateTasks.filter(t => t.type === 'overflow').length} overflow jobs.`);
+    console.log(`Attempting to update ${updates.length} jobs...`);
+
+    // Create an array of Supabase update promises
+    const updatePromises = updates.map(update => {
+        // Double-check that data is not empty or null
+        if (!update.data || Object.keys(update.data).length === 0) {
+             console.warn(`Skipping update for job ${update.jobId} due to empty update data.`);
+             // Return a resolved promise to avoid breaking Promise.all
+             // Use a structure similar to Supabase's response for consistency, but signal skipped
+             return Promise.resolve({ data: null, error: null, count: null, status: 204, statusText: 'No Content (skipped)' });
+        }
+
+        return supabase
+            .from('jobs')
+            .update(update.data)
+            .eq('id', update.jobId);
+    });
 
     // Execute all updates in parallel
-    // Pass the query builders directly to Promise.all
     try {
-        const updateResults = await Promise.all(updateTasks.map(task => task.query));
+        const updateResults = await Promise.all(updatePromises);
 
-        let scheduledUpdatedCount = 0;
-        let overflowUpdatedCount = 0;
+        let successCount = 0;
         let errorCount = 0;
+        const failedJobIds: number[] = [];
 
-        // Check results - Supabase returns { data, error }
+        // Check results - Supabase returns { data, error, ... }
         updateResults.forEach((result, index) => {
-            const task = updateTasks[index];
+            const jobId = updates[index].jobId;
+             // Handle skipped updates (they won't have an error object matching Supabase error structure)
+             if (result.status === 204 && result.statusText?.includes('(skipped)')) {
+                // Already warned above, do nothing here
+                return;
+            }
+
             if (result.error) {
-                console.error(`Error updating job ${task.id} (${task.type}):`, result.error);
-                // Collect errors but continue checking others
+                console.error(`Error updating job ${jobId}:`, result.error);
                 errorCount++;
+                failedJobIds.push(jobId);
             } else {
-                // Log success (optional)
-                // console.log(`Successfully updated job ${task.id} (${task.type})`);
-                if (task.type === 'scheduled') scheduledUpdatedCount++;
-                if (task.type === 'overflow') overflowUpdatedCount++;
+                // Supabase update returns data (often null/empty array unless returning Minimal) and no error on success
+                successCount++;
             }
         });
 
-        console.log(`Update summary: ${scheduledUpdatedCount} scheduled jobs updated, ${overflowUpdatedCount} overflow jobs updated.`);
+        console.log(`Update summary: ${successCount} jobs updated successfully, ${errorCount} updates failed.`);
 
         if (errorCount > 0) {
             // Throw a single error summarizing the failures
-            throw new Error(`${errorCount} database update(s) failed. Check logs for details.`);
+            throw new Error(`${errorCount} database update(s) failed for job IDs: ${failedJobIds.join(', ')}. Check logs for details.`);
         }
 
     } catch (error) {
         console.error('Error performing batch job updates:', error);
         // Rethrow or handle as appropriate
         if (error instanceof Error) {
-            throw error;
+            throw error; // Keep the specific error message (like the one with failed IDs)
         }
         throw new Error('An unknown error occurred during database updates.');
     }

@@ -1,6 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
-import { updateJobStatuses } from '../../src/db/update';
-import { OptimizationResponsePayload, TechnicianRoute, RouteStop } from '../../src/types/optimization.types';
+import { updateJobs, JobUpdateOperation, JobUpdatePayload } from '../../src/db/update';
+import { JobStatus } from '../../src/types/database.types'; // Import JobStatus
 
 // Mock Supabase Client and its methods
 const mockEq = jest.fn();
@@ -11,182 +11,168 @@ const mockSupabaseClient = { // Mock Client object
     from: mockFrom,
 } as unknown as SupabaseClient<any>; // Cast to SupabaseClient type
 
-// Mock Data
-const mockStartTime1 = new Date('2024-01-01T09:00:00.000Z');
-const mockEndTime1 = new Date('2024-01-01T09:30:00.000Z');
-const mockStartTime2 = new Date('2024-01-01T10:00:00.000Z');
-const mockEndTime2 = new Date('2024-01-01T11:00:00.000Z');
-
-const stopJob1: RouteStop = { itemId: 'job_101', arrivalTimeISO: mockStartTime1.toISOString(), startTimeISO: mockStartTime1.toISOString(), endTimeISO: mockEndTime1.toISOString() };
-const stopJob2: RouteStop = { itemId: 'job_102', arrivalTimeISO: mockStartTime2.toISOString(), startTimeISO: mockStartTime2.toISOString(), endTimeISO: mockEndTime2.toISOString() };
-const stopBundle: RouteStop = { itemId: 'bundle_201', arrivalTimeISO: '...', startTimeISO: '...', endTimeISO: '...' };
-
-const routeTech1: TechnicianRoute = { technicianId: 1, stops: [stopJob1] };
-const routeTech2: TechnicianRoute = { technicianId: 2, stops: [stopJob2] };
-
-describe('updateJobStatuses', () => {
+// --- Test Suite for updateJobs ---
+describe('updateJobs', () => {
 
     beforeEach(() => {
         // Reset mocks before each test
         mockFrom.mockClear();
         mockUpdate.mockClear();
         mockEq.mockClear();
-        // Default mock for successful updates
-        mockEq.mockResolvedValue({ data: [{}], error: null }); 
+        // Default mock for successful updates (eq returns success)
+        mockEq.mockResolvedValue({ data: [{}], error: null, status: 200, statusText: 'OK' }); 
     });
 
-    it('should throw an error if optimization response status is "error"', async () => {
-        const errorResponse: OptimizationResponsePayload = {
-            status: 'error',
-            message: 'Solver failed',
-            routes: [],
-        };
-
-        await expect(updateJobStatuses(mockSupabaseClient, errorResponse)).rejects.toThrow('Optimization failed: Solver failed');
+    it('should do nothing if the updates array is empty', async () => {
+        const updates: JobUpdateOperation[] = [];
+        await updateJobs(mockSupabaseClient, updates);
         expect(mockFrom).not.toHaveBeenCalled();
     });
 
-    it('should do nothing if there are no routes and no unassigned items', async () => {
-        const emptyResponse: OptimizationResponsePayload = {
-            status: 'success',
-            routes: [],
-            unassignedItemIds: [],
-        };
+    it('should correctly update a single job with status, tech, and time', async () => {
+        const jobId = 101;
+        const technicianId = 5;
+        const scheduledTime = new Date('2024-08-01T10:00:00.000Z').toISOString();
+        const updates: JobUpdateOperation[] = [
+            {
+                jobId: jobId,
+                data: {
+                    status: 'scheduled',
+                    assigned_technician: technicianId,
+                    estimated_sched: scheduledTime,
+                }
+            }
+        ];
 
-        await updateJobStatuses(mockSupabaseClient, emptyResponse);
-        expect(mockFrom).not.toHaveBeenCalled();
+        await updateJobs(mockSupabaseClient, updates);
+
+        expect(mockFrom).toHaveBeenCalledTimes(1);
+        expect(mockFrom).toHaveBeenCalledWith('jobs');
+        expect(mockUpdate).toHaveBeenCalledTimes(1);
+        expect(mockUpdate).toHaveBeenCalledWith(updates[0].data);
+        expect(mockEq).toHaveBeenCalledTimes(1);
+        expect(mockEq).toHaveBeenCalledWith('id', jobId);
     });
 
-    it('should update scheduled jobs correctly', async () => {
-        const successResponse: OptimizationResponsePayload = {
-            status: 'success',
-            routes: [routeTech1, routeTech2],
-            unassignedItemIds: [],
+    it('should correctly update multiple jobs with different statuses', async () => {
+        const update1: JobUpdateOperation = {
+            jobId: 101,
+            data: { status: 'scheduled_future', assigned_technician: 6, estimated_sched: '2024-08-02T09:00:00Z' }
+        };
+        const update2: JobUpdateOperation = {
+            jobId: 102,
+            data: { status: 'overflow', assigned_technician: null, estimated_sched: null }
+        };
+        const update3: JobUpdateOperation = {
+            jobId: 103,
+            data: { status: 'unschedulable_overflow', assigned_technician: null, estimated_sched: null }
         };
 
-        await updateJobStatuses(mockSupabaseClient, successResponse);
+        const updates = [update1, update2, update3];
+        await updateJobs(mockSupabaseClient, updates);
 
-        expect(mockFrom).toHaveBeenCalledWith('jobs');
+        expect(mockFrom).toHaveBeenCalledTimes(updates.length); // `from` is called in each map iteration
+        expect(mockUpdate).toHaveBeenCalledTimes(updates.length);
+        expect(mockEq).toHaveBeenCalledTimes(updates.length);
+
+        // Check calls for each update
+        expect(mockUpdate).toHaveBeenCalledWith(update1.data);
+        expect(mockEq).toHaveBeenCalledWith('id', update1.jobId);
+
+        expect(mockUpdate).toHaveBeenCalledWith(update2.data);
+        expect(mockEq).toHaveBeenCalledWith('id', update2.jobId);
+        
+        expect(mockUpdate).toHaveBeenCalledWith(update3.data);
+        expect(mockEq).toHaveBeenCalledWith('id', update3.jobId);
+    });
+
+    it('should skip updates where the data payload is empty or null', async () => {
+        const update1: JobUpdateOperation = {
+            jobId: 101,
+            data: { status: 'scheduled' } // Valid
+        };
+        const update2: JobUpdateOperation = {
+            jobId: 102,
+            data: {} // Empty data
+        };
+        const update3: JobUpdateOperation = {
+            jobId: 103,
+            data: null as any // Null data (cast needed for test)
+        };
+         const update4: JobUpdateOperation = {
+            jobId: 104,
+            data: { assigned_technician: 8 } // Valid
+        };
+
+        const updates = [update1, update2, update3, update4];
+        // Mock console.warn to check if it's called
+        const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+        await updateJobs(mockSupabaseClient, updates);
+
+        // Should only call Supabase update for the valid operations (1 and 4)
+        expect(mockFrom).toHaveBeenCalledTimes(2);
         expect(mockUpdate).toHaveBeenCalledTimes(2);
         expect(mockEq).toHaveBeenCalledTimes(2);
 
-        // Check update call for Job 101
-        expect(mockUpdate).toHaveBeenCalledWith({
-            assigned_technician: 1,
-            estimated_sched: mockStartTime1.toISOString(),
-            status: 'scheduled',
-        });
-        expect(mockEq).toHaveBeenCalledWith('id', 101);
+        // Check calls for valid updates
+        expect(mockUpdate).toHaveBeenCalledWith(update1.data);
+        expect(mockEq).toHaveBeenCalledWith('id', update1.jobId);
+        expect(mockUpdate).toHaveBeenCalledWith(update4.data);
+        expect(mockEq).toHaveBeenCalledWith('id', update4.jobId);
 
-        // Check update call for Job 102
-        expect(mockUpdate).toHaveBeenCalledWith({
-            assigned_technician: 2,
-            estimated_sched: mockStartTime2.toISOString(),
-            status: 'scheduled',
-        });
-        expect(mockEq).toHaveBeenCalledWith('id', 102);
+        // Check that warnings were issued for skipped updates
+        expect(consoleWarnSpy).toHaveBeenCalledTimes(2); 
+        expect(consoleWarnSpy).toHaveBeenCalledWith(`Skipping update for job ${update2.jobId} due to empty update data.`);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(`Skipping update for job ${update3.jobId} due to empty update data.`);
+
+        consoleWarnSpy.mockRestore(); // Restore console.warn
     });
 
-    it('should update unassigned (overflow) jobs correctly', async () => {
-        const partialResponse: OptimizationResponsePayload = {
-            status: 'partial',
-            routes: [],
-            unassignedItemIds: ['job_103', 'job_104'],
-        };
+    it('should throw an error summarizing failures if one update fails', async () => {
+        const update1: JobUpdateOperation = { jobId: 101, data: { status: 'scheduled' } };
+        const update2: JobUpdateOperation = { jobId: 102, data: { status: 'overflow' } };
+        const update3: JobUpdateOperation = { jobId: 103, data: { status: 'scheduled' } };
+        const updates = [update1, update2, update3];
 
-        await updateJobStatuses(mockSupabaseClient, partialResponse);
+        const mockError = { message: 'DB error', details: 'Constraint violation', code: '23505' };
+        // Mock .eq to fail for the second update (jobId 102)
+        mockEq
+            .mockResolvedValueOnce({ data: [{}], error: null, status: 200, statusText: 'OK' }) // Success for 101
+            .mockResolvedValueOnce({ data: null, error: mockError, status: 500, statusText: 'Internal Server Error' }) // Fail for 102
+            .mockResolvedValueOnce({ data: [{}], error: null, status: 200, statusText: 'OK' }); // Success for 103
 
-        expect(mockFrom).toHaveBeenCalledWith('jobs');
-        expect(mockUpdate).toHaveBeenCalledTimes(2);
-        expect(mockEq).toHaveBeenCalledTimes(2);
-
-        const expectedOverflowUpdate = {
-            status: 'pending_review',
-            assigned_technician: null,
-            estimated_sched: null,
-        };
-
-        // Check update call for Job 103
-        expect(mockUpdate).toHaveBeenCalledWith(expectedOverflowUpdate);
-        expect(mockEq).toHaveBeenCalledWith('id', 103);
-
-        // Check update call for Job 104
-        expect(mockUpdate).toHaveBeenCalledWith(expectedOverflowUpdate);
-        expect(mockEq).toHaveBeenCalledWith('id', 104);
-    });
-
-    it('should handle a mix of scheduled and unassigned jobs, ignoring bundles and invalid IDs', async () => {
-        const mixedResponse: OptimizationResponsePayload = {
-            status: 'partial',
-            routes: [
-                { technicianId: 1, stops: [stopJob1, stopBundle] }, // Job 101 scheduled, Bundle ignored
-            ],
-            unassignedItemIds: ['job_105', 'bundle_202', 'job_invalid'], // Job 105 overflow, Bundle ignored, invalid ignored
-        };
-
-        await updateJobStatuses(mockSupabaseClient, mixedResponse);
-
-        expect(mockFrom).toHaveBeenCalledWith('jobs');
-        expect(mockUpdate).toHaveBeenCalledTimes(2); // One scheduled, one overflow
-        expect(mockEq).toHaveBeenCalledTimes(2);
-
-        // Check scheduled update (Job 101)
-        expect(mockUpdate).toHaveBeenCalledWith({
-            assigned_technician: 1,
-            estimated_sched: mockStartTime1.toISOString(),
-            status: 'scheduled',
-        });
-        expect(mockEq).toHaveBeenCalledWith('id', 101);
-
-        // Check overflow update (Job 105)
-        expect(mockUpdate).toHaveBeenCalledWith({
-            status: 'pending_review',
-            assigned_technician: null,
-            estimated_sched: null,
-        });
-        expect(mockEq).toHaveBeenCalledWith('id', 105);
-    });
-
-    it('should throw an error if any database update fails', async () => {
-        const successResponse: OptimizationResponsePayload = {
-            status: 'success',
-            routes: [routeTech1, routeTech2], // Job 101, Job 102
-            unassignedItemIds: ['job_103'], // Job 103 overflow
-        };
-
-        // Mock one failure (e.g., the second update for job 102)
-        const mockError = { message: 'DB constraint violated', code: '23505' };
-        mockEq.mockResolvedValueOnce({ data: [{}], error: null }); // Job 101 succeeds
-        mockEq.mockResolvedValueOnce({ data: null, error: mockError }); // Job 102 fails
-        mockEq.mockResolvedValueOnce({ data: [{}], error: null }); // Job 103 succeeds
-
-        await expect(updateJobStatuses(mockSupabaseClient, successResponse)).rejects.toThrow(
-            '1 database update(s) failed. Check logs for details.'
+        await expect(updateJobs(mockSupabaseClient, updates)).rejects.toThrow(
+            `1 database update(s) failed for job IDs: 102. Check logs for details.`
         );
 
-        // Ensure all updates were still attempted
-        expect(mockFrom).toHaveBeenCalledWith('jobs');
-        expect(mockUpdate).toHaveBeenCalledTimes(3);
-        expect(mockEq).toHaveBeenCalledTimes(3);
+        // Ensure all updates were attempted
+        expect(mockFrom).toHaveBeenCalledTimes(updates.length);
+        expect(mockUpdate).toHaveBeenCalledTimes(updates.length);
+        expect(mockEq).toHaveBeenCalledTimes(updates.length);
     });
 
-    it('should throw a correctly counted error if multiple updates fail', async () => {
-         const successResponse: OptimizationResponsePayload = {
-            status: 'success',
-            routes: [routeTech1, routeTech2], // Job 101, Job 102
-            unassignedItemIds: ['job_103'], // Job 103 overflow
-        };
+    it('should throw an error summarizing failures if multiple updates fail', async () => {
+        const update1: JobUpdateOperation = { jobId: 101, data: { status: 'scheduled' } };
+        const update2: JobUpdateOperation = { jobId: 102, data: { status: 'overflow' } };
+        const update3: JobUpdateOperation = { jobId: 103, data: { status: 'scheduled' } };
+        const updates = [update1, update2, update3];
 
-        // Mock multiple failures
-        const mockError1 = { message: 'DB error 1', code: '1' };
-        const mockError2 = { message: 'DB error 2', code: '2' };
-        mockEq.mockResolvedValueOnce({ data: null, error: mockError1 }); // Job 101 fails
-        mockEq.mockResolvedValueOnce({ data: [{}], error: null });    // Job 102 succeeds
-        mockEq.mockResolvedValueOnce({ data: null, error: mockError2 }); // Job 103 fails
+        const mockError1 = { message: 'DB error 1', details: '...', code: '1' };
+        const mockError2 = { message: 'DB error 2', details: '...', code: '2' };
+        // Mock .eq to fail for the first and third updates
+        mockEq
+            .mockResolvedValueOnce({ data: null, error: mockError1, status: 500, statusText: 'Error' }) // Fail for 101
+            .mockResolvedValueOnce({ data: [{}], error: null, status: 200, statusText: 'OK' }) // Success for 102
+            .mockResolvedValueOnce({ data: null, error: mockError2, status: 500, statusText: 'Error' }); // Fail for 103
 
-        await expect(updateJobStatuses(mockSupabaseClient, successResponse)).rejects.toThrow(
-            '2 database update(s) failed. Check logs for details.'
+        await expect(updateJobs(mockSupabaseClient, updates)).rejects.toThrow(
+            `2 database update(s) failed for job IDs: 101, 103. Check logs for details.`
         );
-        expect(mockEq).toHaveBeenCalledTimes(3);
+
+        // Ensure all updates were attempted
+        expect(mockFrom).toHaveBeenCalledTimes(updates.length);
+        expect(mockUpdate).toHaveBeenCalledTimes(updates.length);
+        expect(mockEq).toHaveBeenCalledTimes(updates.length);
     });
 }); 

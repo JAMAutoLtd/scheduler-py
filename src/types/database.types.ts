@@ -35,9 +35,27 @@ export interface Technician {
   van?: Van;
   current_location?: { lat: number; lng: number }; // Added for scheduler convenience
   earliest_availability?: string; // Added for scheduler convenience
+  home_location?: { lat: number; lng: number }; // Added for multi-day overflow
 }
 
-export type JobStatus = 'pending_review' | 'assigned' | 'scheduled' | 'pending_revisit' | 'completed' | 'cancelled' | 'queued' | 'en_route' | 'in_progress' | 'fixed_time'; // Extended based on PLANNING.md
+export type JobStatus = 
+  // Core statuses used by runFullReplan final update:
+  | 'queued' // Job is scheduled with technician and time
+  | 'pending_review' // Job could not be scheduled within the overflow window
+  // Other potentially relevant statuses (read by scheduler):
+  | 'en_route'
+  | 'in_progress'
+  | 'fixed_time'
+  // Statuses potentially used by other processes or older versions:
+  | 'assigned' 
+  | 'scheduled' // Older equivalent of 'queued'?
+  | 'pending_revisit' 
+  | 'completed' 
+  | 'cancelled' 
+  // Deprecated statuses (no longer primary output of runFullReplan):
+  | 'overflow' 
+  | 'scheduled_future' 
+  | 'unschedulable_overflow'; 
 
 export interface Job {
   id: number;
@@ -123,4 +141,12 @@ export interface SchedulableJob {
     eligible_technician_ids: number[];
 }
 
-export type SchedulableItem = JobBundle | SchedulableJob; 
+export type SchedulableItem = JobBundle | SchedulableJob;
+
+// Type for technician availability calculated for a specific day
+export interface TechnicianAvailability {
+  technicianId: number;
+  availabilityStartTimeISO: string;
+  availabilityEndTimeISO: string;
+  startLocation: { lat: number; lng: number };
+} 

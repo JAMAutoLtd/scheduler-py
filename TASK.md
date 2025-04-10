@@ -74,7 +74,58 @@ This document tracks the development tasks for the dynamic job scheduling system
         *   [X] Updating the DB (Supabase).
     *   [X] (Future Consideration) Determine how this process will be triggered.
 
-*   **[ ] Testing** - (Est: Ongoing - ~10h total) - {Current Date} (Adjusted scope)
+*   **[ ] Implement Multi-Day Overflow Scheduling** - (Est: 8h) - {Current Date} (Estimate increased due to refinements)
+    *   [X] **Type Definitions (`src/types/database.types.ts`):**
+        *   [X] Add `home_location: { lat: number; lng: number } | undefined;` to the `Technician` interface. - {Current Date}
+        *   [X] Add `'overflow'`, to the `JobStatus` type/enum. - {Current Date} (Already existed, but usage will change)
+        *   [X] Add `'pending_review'` to `JobStatus` type/enum if it doesn't exist.
+        *   [X] Define `TechnicianAvailability { technicianId: number; availabilityStartTimeISO: string; availabilityEndTimeISO: string; startLocation: { lat: number; lng: number }; }`. - {Current Date}
+    *   [X] **DB Update (`src/db/update.ts`):**
+        *   [X] Refactor `updateJobStatuses` (or create a new function, e.g., `updateSpecificJobStatuses`) to accept parameters like `jobIds: number[]` and `targetStatus: JobStatus`, allowing targeted updates for different stages (initial overflow, loop scheduled, loop overflow, final unschedulable). - {Current Date} (Created `updateJobs`, function remains flexible for final update).
+        *   [X] Implement logic to handle `bundle_...` IDs in the optimization response: When processing results, map bundle IDs back to their constituent `job.id`s before calling the database update function. (This might involve modifying `processOptimizationResults` or adding a pre-processing step in the orchestrator). - {Current Date} (Implemented via `mapItemsToJobIds` helper in orchestrator, still relevant for mapping results before the *final* update).
+    *   [X] **Supabase Fetching (`src/supabase/`):**
+        *   [X] `technicians.ts`: Modify `getActiveTechnicians` query to join `users` then `addresses` using `home_address_id` to fetch home location coordinates (e.g., `... users!inner ( ..., home_address_id, addresses!inner ( lat, lng ) ) ...`). Store result in `Technician.home_location`. - {Current Date}
+        *   [X] `jobs.ts`: Create `getJobsByStatus(statuses: JobStatus[])` function, reusing necessary join logic from `getRelevantJobs`, to fetch jobs by specific status(es) needed for the overflow loop. - {Current Date} (Will primarily fetch `queued` initially, and potentially refetch job details based on internal tracking IDs during the loop).
+    *   [X] **Availability Calculation (`src/scheduler/availability.ts`):**
+        *   [X] Create `calculateAvailabilityForDay(technicians: Technician[], targetDate: Date): TechnicianAvailability[]`. - {Current Date}
+        *   [X] Function should calculate the next valid working day start/end times (9am-6:30pm) based on `targetDate`. - {Current Date}
+        *   [X] Implement logic to skip non-working days (initially Sat/Sun). - {Current Date}
+        *   [N/A] **New Sub-Task:** Implement/configure holiday checking logic (e.g., fetch from DB table `company_holidays` or use config/library) and integrate into non-working day skipping. - {Current Date} (Handled by upstream availability data)
+        *   [X] Function must *not* consider locked jobs for future day calculations. - {Current Date}
+        *   [X] Function should use `technician.home_location` as the `startLocation` in the returned `TechnicianAvailability` objects. - {Current Date}
+        *   [X] Function should handle cases where no technicians have availability on a given day (return empty array or signal). - {Current Date}
+    *   [X] **Payload Preparation (`src/scheduler/payload.ts`):**
+        *   [X] Modify `prepareOptimizationPayload` to accept `TechnicianAvailability[]` (from `calculateAvailabilityForDay`) as an input parameter, alongside the base `Technician[]` list. - {Current Date}
+        *   [X] Update the logic for creating `OptimizationTechnician`:
+            *   [X] Use `technicianAvailability.startLocation` to determine the `startLocationIndex`. - {Current Date}
+            *   [X] Use `technicianAvailability.availabilityStartTimeISO` for `earliestStartTimeISO`. - {Current Date}
+            *   [X] Use `technicianAvailability.availabilityEndTimeISO` for `latestEndTimeISO`. - {Current Date}
+    *   [ ] **Orchestration Refactoring (`src/scheduler/orchestrator.ts`):**
+        *   [X] Refactor `runFullReplan` to implement internal overflow tracking:
+            *   [X] Maintain internal state for successful assignments (`finalAssignments`: Map<jobId, { techId, schedTime }>) and jobs still needing placement (`jobsToPlan`: Set<jobId>).
+            *   [X] Perform Pass 1 (Today): Optimize `jobsToPlan`, update internal state.
+            *   [X] Perform Overflow Loop: Iterate up to `MAX_OVERFLOW_ATTEMPTS` days.
+                *   [X] Inside loop: Fetch job details for `jobsToPlan`, calculate future availability, bundle, check eligibility, prepare payload, call optimizer.
+                *   [X] Update internal state (`finalAssignments`, `jobsToPlan`) based on loop results.
+                *   [X] **Do not** perform intermediate DB updates within the loop.
+            *   [X] Perform Final DB Update: After loop, call `updateJobs` *once*:
+                *   [X] Update jobs in `finalAssignments` to `status: 'queued'`, set `assigned_technician`, `estimated_sched`.
+                *   [X] Update jobs remaining in `jobsToPlan` to `status: 'pending_review'`, clear `assigned_technician`, `estimated_sched`.
+    *   [ ] **Testing:**
+        *   [X] Add unit tests for `getJobsByStatus`. - {Current Date}
+        *   [X] Add unit tests for `calculateAvailabilityForDay` (including non-working days, holiday logic). - {Current Date}
+        *   [X] Update unit tests for `updateJobStatuses` (or its replacement) to reflect new parameters/logic. - {Current Date} (Tests for `updateJobs` remain relevant).
+        *   [X] Add unit tests for `prepareOptimizationPayload` to test passing `TechnicianAvailability`. - {Current Date}
+        *   [X] Add/update integration/unit tests for `runFullReplan` to cover the **refactored** overflow loop logic, internal state management, final DB update, and different outcomes (all scheduled, some pending review). - {Current Date}
+    *   [ ] **Documentation:** Update `README.md`, `PLANNING.md`, `OVERVIEW.md` and `CHANGELOG.md` to reflect the refactored approach and simplified statuses.
+
+*   **[ ] Refactor Time Handling for UTC Consistency** - (Est: 2h) - {Current Date}
+    *   [X] Modify `src/scheduler/availability.ts` (`getAdjustedCurrentTime`, `calculateTechnicianAvailability`, `calculateAvailabilityForDay`) to use UTC methods (`getUTCDay`, `setUTCHours`, etc.) instead of local time methods for all date/time calculations. - {Current Date}
+    *   [X] Modify `src/scheduler/payload.ts` (`prepareOptimizationPayload`) to use UTC methods when calculating `latestEndDate` for the fallback logic. - {Current Date}
+    *   [X] Rerun/update unit tests for `src/scheduler/availability.ts` (`tests/scheduler/availability.test.ts`) after refactoring to ensure they pass with UTC logic. - {Current Date}
+    *   [X] Review and potentially update unit tests for `src/scheduler/payload.ts` (`tests/scheduler/payload.test.ts`) if time calculations were affected. - {Current Date}
+
+*   **[ ] Testing** - (Est: Ongoing - ~12h total) - {Current Date} (Estimate increased)
     *   [X] Set up testing framework (e.g., Jest). - {Current Date}
     *   [X] Write unit tests for Data Fetching module (mocking Supabase client). - {Current Date}
         *   [X] `tests/supabase/jobs.test.ts` (for `src/supabase/jobs.ts`)
@@ -87,7 +138,7 @@ This document tracks the development tasks for the dynamic job scheduling system
     *   [X] Write unit tests for Optimization Service Communication (payload creation, request sending - requires mocking HTTP calls). - {Current Date}
     *   [X] Write unit tests for Result Processing logic (parsing the expected microservice response). - {Current Date}
     *   [X] Write unit tests for Database Update module (mocking Supabase client). - {Current Date}
-    *   [ ] Aim for happy path, edge case, and failure case tests for key functions.
+    *   [X] Aim for happy path, edge case, and failure case tests for key functions.
     *   *Note:* Integration tests involving the actual microservice might be needed separately.
     *   [ ] Follow sequential test order for troubleshooting:
         *   [X] **Supabase Data Fetching (`tests/supabase/`)**
@@ -98,19 +149,36 @@ This document tracks the development tasks for the dynamic job scheduling system
         *   [X] **Google Maps (`tests/google/`)**
             *   [X] `maps.test.ts`
         *   [ ] **Scheduler Logic (Pre-Payload) (`tests/scheduler/`)**
-            *   [ ] `availability.test.ts` **NYI**
+            *   [X] `availability.test.ts` (**Create tests for BOTH `calculateTechnicianAvailability` and `calculateAvailabilityForDay`**) (**Requires update after UTC refactor**) - {Current Date}
             *   [X] `bundling.test.ts`
             *   [X] `eligibility.test.ts`
-        *   [ ] **Optimization Payload & Call (`tests/scheduler/`)**
-            *   [X] `payload.test.ts`
-            *   [ ] `optimize.test.ts`
-        *   [ ] **Result Processing & DB Update (`tests/scheduler/` & `tests/db/`)**
-            *   [ ] `results.test.ts`
-            *   [X] `update.test.ts` (`tests/db/`)
+        *   [X] **Optimization Payload & Call (`tests/scheduler/`)**
+            *   [X] `payload.test.ts` (**Update for new parameters/logic; Review after UTC refactor**) - {Current Date}
+            *   [X] `optimize.test.ts` - {Current Date}
+        *   [X] **Result Processing & DB Update (`tests/scheduler/` & `tests/db/`)**
+            *   [X] `results.test.ts` - {Current Date}
+            *   [X] `update.test.ts` (`tests/db/`) (**Update for refactored function/logic**)
+        *   [X] **Orchestration (`tests/scheduler/`)**
+             *   [X] `orchestrator.test.ts` (**Update tests significantly for refactored `runFullReplan` internal logic and final DB update**) - {Current Date}
+                 *   [X] Test: Happy Path (Today Only) - All jobs scheduled `queued`.
+                 *   [X] Test: Partial Schedule (Today Only) - Some `queued`, some `pending_review`.
+                 *   [X] Test: No Schedulable Jobs - No updates or empty update. (Covered by basic tests)
+                 *   [X] Test: No Technicians - Exits early, no updates. (Covered by basic tests)
+                 *   [X] Test: Overflow Path (Single Future Day) - All overflow scheduled `queued` for Day 2.
+                 *   [X] Test: Overflow Path (Multiple Future Days) - Overflow scheduled `queued` for Day 3.
+                 *   [X] Test: Full Overflow - All jobs end as `pending_review` after max attempts.
+                 *   [X] Test: Mixed Overflow - Some scheduled `queued` on future day, rest `pending_review`.
+                 *   [X] Test: Weekend Skip Overflow - Jobs overflow Friday, skip Sat/Sun, scheduled `queued` Mon.
+                 *   [X] Test: Bundling Interaction - Successfully scheduled bundle jobs are `queued`.
+                 *   [X] Test: Bundling Interaction - Unassigned bundle jobs are `pending_review`.
+                 *   [X] Test: Error Handling - `callOptimizationService` fails.
+                 *   [X] Test: Error Handling - `getActiveTechnicians` fails.
 
 *   **[ ] Documentation & Finalization** - (Est: 2h) - {Date}
     *   [X] Update `README.md` with setup instructions, how to run, and overview.
     *   [X] Add necessary code comments (docstrings, `# Reason:` where needed).
+    *   [ ] Update `PLANNING.md` to reflect refactored approach.
+    *   [ ] Update `OVERVIEW.md` (if used) to reflect refactored approach.
     *   [ ] Final review and cleanup.
     *   [ ] Create/update `CHANGELOG.md`.
 
@@ -124,6 +192,8 @@ This document tracks the development tasks for the dynamic job scheduling system
 *   [ ] Review travel time error handling in `optimize-service/main.py`. The large penalty (999999) for failed lookups might cause suboptimal routes instead of explicit errors. Consider alternative handling. ({Current Date})
 *   [ ] Review priority penalty calculation in `optimize-service/main.py`. Analyze if the current `base_penalty` and scaling formula (`base_penalty * (max_priority - item.priority + 1)`) effectively represent business value. Consider refining based on factors like job revenue, cost, technician rates, or SLA impact. ({Current Date})
 *   [ ] Consider implementing starvation protection for low-priority jobs. Investigate dynamically increasing the priority value *sent to the solver* based on job age (e.g., days since order created) without altering the original job record's priority. ({Current Date})
+*   [N/A] **New Sub-Task:** Implement configurable holiday checking for `calculateAvailabilityForDay` (e.g., fetch from DB table or config). ({Current Date})
+*   [ ] **Integration Testing:** Consider adding integration tests (e.g., using `msw` or `nock`) for `callOptimizationService` to verify the end-to-end handling of real Axios HTTP errors/timeouts, complementing the current unit tests which focus on internal logic branches. - {Current Date}
 
 *   **[ ] Future Enhancement (Low Priority): Convert Optimizer to Value-Based Optimization** - {Current Date}
     *   **Goal:** Shift from minimizing travel time + penalties to maximizing net value (e.g., Job Revenue - Travel Cost).
@@ -151,6 +221,8 @@ This document tracks the development tasks for the dynamic job scheduling system
 *   **[X] Sub-Task: Added Error Handling for Service Call** (`src/scheduler/optimize.ts`) - {Current Date}
 *   **[X] Module: Result Processing** (`src/scheduler/results.ts`) - {Current Date}
 *   **[X] Module: Database Update** (`src/db/update.ts`) - {Current Date}
+*   **[X] Time Handling Refactor (UTC)** - {Current Date}
+*   **[X] Initial Multi-Day Overflow Implementation** (Parts of `technicians.ts`, `jobs.ts`, `availability.ts`, `payload.ts`, `orchestrator.ts` before current refactor) - {Current Date}
 
 ---
 
@@ -161,4 +233,9 @@ This document tracks the development tasks for the dynamic job scheduling system
 *   Testing should occur alongside development of each module/feature.
 *   Remember to update this file and `CHANGELOG.md` regularly.
 *   Replace `{Date}` placeholders with actual start/completion dates.
-*   Replace `{Current Date}` with today's date. 
+*   Replace `{Current Date}` with today's date.
+*   [ ] Review travel time error handling in `optimize-service/main.py`. The large penalty (999999) for failed lookups might cause suboptimal routes instead of explicit errors. Consider alternative handling. ({Current Date})
+*   [ ] Review priority penalty calculation in `optimize-service/main.py`. Analyze if the current `base_penalty` and scaling formula (`base_penalty * (max_priority - item.priority + 1)`) effectively represent business value. Consider refining based on factors like job revenue, cost, technician rates, or SLA impact. ({Current Date})
+*   [ ] Consider implementing starvation protection for low-priority jobs. Investigate dynamically increasing the priority value *sent to the solver* based on job age (e.g., days since order created) without altering the original job record's priority. ({Current Date})
+*   **[ ] Future Enhancement (Low Priority): Convert Optimizer to Value-Based Optimization** - {Current Date}
+*   **[ ] Future Enhancement (Low Priority): Convert Optimizer to Value-Based Optimization** - {Current Date} 

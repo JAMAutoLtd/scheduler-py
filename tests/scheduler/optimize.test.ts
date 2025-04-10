@@ -2,156 +2,151 @@ import axios from 'axios';
 import { callOptimizationService } from '../../src/scheduler/optimize';
 import { OptimizationRequestPayload, OptimizationResponsePayload } from '../../src/types/optimization.types';
 
-// Mock axios
+// Mock the axios module
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-// Mock environment variable
-const MOCK_SERVICE_URL = 'http://test-optimizer.local/optimize';
-const originalEnv = process.env;
-
-beforeAll(() => {
-    // Set the required env var before tests
-    process.env = {
-        ...originalEnv,
-        OPTIMIZATION_SERVICE_URL: MOCK_SERVICE_URL,
-    };
-});
-
-afterAll(() => {
-    // Restore original env vars after tests
-    process.env = originalEnv;
-});
-
-// Mock Data - Corrected Response Structures
-const mockRequestPayload: OptimizationRequestPayload = {
-    locations: [],
-    technicians: [],
-    items: [],
-    fixedConstraints: [],
-    travelTimeMatrix: {},
-};
-
-const mockSuccessResponse: OptimizationResponsePayload = {
-    status: 'success',
-    message: 'Optimization successful.',
-    // routes is an array
-    routes: [
-        { technicianId: 1, stops: [], totalDurationSeconds: 0, totalTravelTimeSeconds: 0 }
-    ],
-    unassignedItemIds: [], // Corrected name
-    // metrics were not part of the defined type, removing them
-};
-
-const mockPartialResponse: OptimizationResponsePayload = {
-    status: 'partial',
-    message: 'Could not assign all items.',
-    // routes is an array
-    routes: [
-         { technicianId: 1, stops: [], totalDurationSeconds: 0, totalTravelTimeSeconds: 0 }
-    ],
-    unassignedItemIds: ['job_5'], // Corrected name
-     // metrics were not part of the defined type, removing them
-};
-
-const mockErrorResponse: OptimizationResponsePayload = {
-    status: 'error',
-    message: 'Invalid input data format.',
-    routes: [], // Use empty array instead of null
-    unassignedItemIds: [], // Use empty array instead of null
-     // metrics were not part of the defined type, removing them
-};
+// // Define a dummy URL (assuming it's set in the environment for the module)
+// process.env.OPTIMIZATION_SERVICE_URL = 'http://mock-optimizer.com/optimize'; // REMOVED - Use actual .env value
 
 describe('callOptimizationService', () => {
+    const dummyPayload: OptimizationRequestPayload = {
+        locations: [],
+        technicians: [],
+        items: [],
+        fixedConstraints: [],
+        travelTimeMatrix: {},
+    };
 
     beforeEach(() => {
-        // Clear mocks before each test
+        // Reset mocks before each test
         mockedAxios.post.mockClear();
     });
 
-    it('should call axios.post with the correct URL, payload, and config', async () => {
-        mockedAxios.post.mockResolvedValueOnce({ data: mockSuccessResponse });
+    it('should return the response data on successful call with status "success"', async () => {
+        const mockSuccessResponse: OptimizationResponsePayload = {
+            status: 'success',
+            routes: [{ technicianId: 1, stops: [] }],
+            unassignedItemIds: [],
+        };
+        // Configure the mock for axios.post
+        mockedAxios.post.mockResolvedValue({
+            data: mockSuccessResponse,
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config: {},
+        });
 
-        await callOptimizationService(mockRequestPayload);
+        const result = await callOptimizationService(dummyPayload);
 
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
         expect(mockedAxios.post).toHaveBeenCalledWith(
-            MOCK_SERVICE_URL,
-            mockRequestPayload,
-            {
-                headers: { 'Content-Type': 'application/json' },
-                timeout: 120000 // Check timeout is set
-            }
+            process.env.OPTIMIZATION_SERVICE_URL,
+            dummyPayload,
+            { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
         );
-    });
-
-    it('should return the response data on successful call with status "success"', async () => {
-        mockedAxios.post.mockResolvedValueOnce({ data: mockSuccessResponse });
-
-        const result = await callOptimizationService(mockRequestPayload);
-
         expect(result).toEqual(mockSuccessResponse);
     });
 
     it('should return the response data on successful call with status "partial"', async () => {
-        // Partial is still considered a success in terms of the API call itself
-        mockedAxios.post.mockResolvedValueOnce({ data: mockPartialResponse });
+        const mockPartialResponse: OptimizationResponsePayload = {
+            status: 'partial',
+            message: 'Some items could not be scheduled',
+            routes: [{ technicianId: 1, stops: [] }],
+            unassignedItemIds: ['job_123'],
+        };
+        // Mock console.warn to check if it's called
+        const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
 
-        const result = await callOptimizationService(mockRequestPayload);
+        mockedAxios.post.mockResolvedValue({
+            data: mockPartialResponse,
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config: {},
+        });
 
+        const result = await callOptimizationService(dummyPayload);
+
+        expect(mockedAxios.post).toHaveBeenCalledTimes(1);
         expect(result).toEqual(mockPartialResponse);
-        // Optionally, check for console.warn if important
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+            'Optimization service returned a partial solution:',
+            mockPartialResponse.message
+        );
+        consoleWarnSpy.mockRestore();
     });
 
-    it('should throw an error if the response data status is "error"', async () => {
-        mockedAxios.post.mockResolvedValueOnce({ data: mockErrorResponse });
+    it('should throw an error if the service response status is "error"', async () => {
+        const mockErrorResponse: OptimizationResponsePayload = {
+            status: 'error',
+            message: 'Invalid input data',
+            routes: [],
+        };
+        mockedAxios.post.mockResolvedValue({
+            data: mockErrorResponse,
+            status: 200, // HTTP status is still 200, but payload status is error
+            statusText: 'OK',
+            headers: {},
+            config: {},
+        });
 
-        await expect(callOptimizationService(mockRequestPayload)).rejects.toThrow(
+        await expect(callOptimizationService(dummyPayload)).rejects.toThrow(
             `Optimization service failed: ${mockErrorResponse.message}`
         );
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });
 
-    it('should throw an error on Axios HTTP error (e.g., 404)', async () => {
-        const mockError = {
-            isAxiosError: true,
-            response: {
-                status: 404,
-                data: { detail: 'Not Found' },
-            },
-            message: 'Request failed with status code 404',
+    it('should throw an error on Axios HTTP error (e.g., 500)', async () => {
+        // Create a more realistic AxiosError object
+        const mockAxiosError = new Error('Request failed with status code 500') as any;
+        mockAxiosError.isAxiosError = true; // Important for the type guard
+        mockAxiosError.response = {
+            status: 500,
+            data: { detail: 'Internal server error' },
         };
-        mockedAxios.post.mockRejectedValueOnce(mockError);
+        
+        // Mock axios.post to reject with this error
+        mockedAxios.post.mockRejectedValue(mockAxiosError);
+        // Temporarily mock isAxiosError to return true for our specific mock object
+        const isAxiosErrorSpy = jest.spyOn(axios, 'isAxiosError').mockImplementation((payload: any): payload is any => payload === mockAxiosError);
 
-        await expect(callOptimizationService(mockRequestPayload)).rejects.toThrow(
-            `HTTP error calling optimization service: 404 - ${mockError.message}. Check microservice logs at ${MOCK_SERVICE_URL}.`
+        await expect(callOptimizationService(dummyPayload)).rejects.toThrow(
+             // Check against the message generated by the specific Axios error handling block
+             `HTTP error calling optimization service: 500 - ${mockAxiosError.message}. Check microservice logs at ${process.env.OPTIMIZATION_SERVICE_URL}.`
         );
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+        // Restore the original isAxiosError function
+        isAxiosErrorSpy.mockRestore();
     });
 
-     it('should throw an error on Axios timeout error', async () => {
-        const mockError = {
-            isAxiosError: true,
-            code: 'ECONNABORTED',
-            message: 'timeout of 120000ms exceeded',
-            response: undefined, // No response on timeout
-        };
-        mockedAxios.post.mockRejectedValueOnce(mockError);
+    it('should throw an error on Axios timeout', async () => {
+         // Create a more realistic AxiosError object for timeout
+         const mockAxiosTimeoutError = new Error('timeout of 120000ms exceeded') as any;
+         mockAxiosTimeoutError.isAxiosError = true; // Important for the type guard
+         mockAxiosTimeoutError.code = 'ECONNABORTED'; // Axios timeout code
+         mockAxiosTimeoutError.response = undefined; // No response on timeout
 
-        // The error message construction might vary slightly depending on how Axios formats timeout errors
-        // We check for the core parts.
-         await expect(callOptimizationService(mockRequestPayload)).rejects.toThrow(
-             /HTTP error calling optimization service: undefined - .*timeout/i // Check for status undefined and timeout message
-         );
+        mockedAxios.post.mockRejectedValue(mockAxiosTimeoutError);
+        // Temporarily mock isAxiosError to return true for our specific mock object
+        const isAxiosErrorSpy = jest.spyOn(axios, 'isAxiosError').mockImplementation((payload: any): payload is any => payload === mockAxiosTimeoutError);
+
+        await expect(callOptimizationService(dummyPayload)).rejects.toThrow(
+             // Check against the message generated by the specific Axios error handling block
+             `HTTP error calling optimization service: undefined - ${mockAxiosTimeoutError.message}. Check microservice logs at ${process.env.OPTIMIZATION_SERVICE_URL}.`
+        );
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+        // Restore the original isAxiosError function
+        isAxiosErrorSpy.mockRestore();
     });
 
-    it('should throw an error on generic network error', async () => {
-        const genericError = new Error('Network Error');
-        mockedAxios.post.mockRejectedValueOnce(genericError);
+    it('should throw an error on non-Axios network error', async () => {
+        const mockNetworkError = new Error('Network Error');
+        mockedAxios.post.mockRejectedValue(mockNetworkError);
 
-        await expect(callOptimizationService(mockRequestPayload)).rejects.toThrow(
-            `Network or other error calling optimization service: ${genericError.message}`
+        await expect(callOptimizationService(dummyPayload)).rejects.toThrow(
+            `Network or other error calling optimization service: ${mockNetworkError.message}`
         );
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });

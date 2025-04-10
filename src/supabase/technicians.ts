@@ -1,18 +1,16 @@
 import { supabase } from './client';
-import { Technician, Van, User } from '../types/database.types';
+import { Technician, Van, User, Address } from '../types/database.types';
 
 /**
- * Fetches active technicians along with their assigned van details.
- * TODO: Determine the criteria for 'active' technicians (e.g., based on a status field or just existence in the table).
- * TODO: Implement fetching real-time van location (lat, lng) if available, otherwise default to home base or last known job.
+ * Fetches active technicians along with their assigned van details and home location coordinates.
+ * Uses inner joins, so only technicians with a valid linked user and home address are returned.
+ * TODO: Determine the criteria for 'active' technicians if needed (e.g., based on a status field).
  *
- * @returns {Promise<Technician[]>} A promise that resolves to an array of technicians.
+ * @returns {Promise<Technician[]>} A promise that resolves to an array of technicians with home locations.
  */
 export async function getActiveTechnicians(): Promise<Technician[]> {
-  console.log('Fetching active technicians...');
+  console.log('Fetching active technicians with home locations...');
 
-  // Select technicians and join their user and van details
-  // Assumes van lat/lng are stored directly on the van record for now.
   const { data, error } = await supabase
     .from('technicians')
     .select(`
@@ -20,50 +18,85 @@ export async function getActiveTechnicians(): Promise<Technician[]> {
       user_id,
       assigned_van_id,
       workload,
-      users ( id, full_name, phone, home_address_id ),
+      users!inner (
+        id,
+        full_name,
+        phone,
+        home_address_id,
+        is_admin,
+        customer_type,
+        addresses!inner (
+          lat,
+          lng
+        )
+      ),
       vans ( id, vin, lat, lng, last_service, next_service )
     `)
-    // .eq('is_active', true) // Example filter if an 'is_active' field exists
     ;
 
   if (error) {
-    console.error('Error fetching technicians:', error);
-    throw new Error(`Failed to fetch technicians: ${error.message}`);
+    console.error('Error fetching technicians with home locations:', error);
+    throw new Error(`Failed to fetch technicians: ${error.message} (Details: ${error.details})`);
   }
 
   if (!data) {
-    console.warn('No technicians found.');
+    console.warn('No technicians found (or none with valid user/home address).');
     return [];
   }
 
-  console.log(`Fetched ${data.length} technicians.`);
+  console.log(`Fetched ${data.length} raw technician entries.`);
 
-  // Map the raw data to the Technician interface
-  const technicians: Technician[] = data.map((tech) => {
-    // Type assertion needed as Supabase joins return potentially partial or differently structured objects
-    // Access the first element if the array is not empty, assuming a one-to-one relationship
-    const user = Array.isArray(tech.users) && tech.users.length > 0 ? tech.users[0] as User : undefined;
-    const van = Array.isArray(tech.vans) && tech.vans.length > 0 ? tech.vans[0] as Van : undefined;
+  // Map and filter the raw data to the Technician interface
+  const technicians: Technician[] = data
+    .map((techRaw: any): Technician | null => { // Return type includes null
+      // Validate the structure returned by Supabase
+      const userJoin = techRaw.users;
+      if (!userJoin || typeof userJoin !== 'object' || Array.isArray(userJoin)) {
+        console.warn(`Technician ${techRaw.id} has invalid user join data. Skipping.`);
+        return null;
+      }
 
-    return {
-      id: tech.id,
-      user_id: tech.user_id,
-      assigned_van_id: tech.assigned_van_id,
-      workload: tech.workload,
-      user: user,
-      van: van,
-      // Placeholder for current location - needs actual implementation
-      // This might involve checking van table, or a separate technician location tracking table/system
-      current_location: van?.lat && van?.lng ? { lat: van.lat, lng: van.lng } : undefined,
-      // Placeholder for availability - will be calculated later based on current time and locked jobs
-      earliest_availability: undefined,
-    };
-  });
+      const addressJoin = userJoin.addresses;
+      if (!addressJoin || typeof addressJoin !== 'object' || Array.isArray(addressJoin)) {
+        console.warn(`Technician ${techRaw.id} (User ${userJoin.id}) has invalid address join data. Skipping.`);
+        return null;
+      }
+      
+      // Cast to expected types after validation
+      const user = userJoin as User; 
+      const homeAddress = addressJoin as Address;
+      const van = Array.isArray(techRaw.vans) && techRaw.vans.length > 0 ? techRaw.vans[0] as Van : undefined;
 
+      // Create home_location object
+      let homeLocation: { lat: number; lng: number } | undefined = undefined;
+      if (homeAddress?.lat != null && homeAddress?.lng != null) {
+        homeLocation = { lat: homeAddress.lat, lng: homeAddress.lng };
+      } else {
+        console.warn(`Technician ${techRaw.id} (User ${user.id}) has missing home address coordinates.`);
+      }
+
+      // Construct the final Technician object strictly matching the interface
+      const technicianData: Technician = {
+        id: techRaw.id,
+        user_id: techRaw.user_id,
+        assigned_van_id: techRaw.assigned_van_id,
+        workload: techRaw.workload,
+        user: user, // Assign the validated User object
+        van: van, // van can be undefined, matching Technician interface
+        home_location: homeLocation, // home_location is optional
+        current_location: (van?.lat != null && van?.lng != null) ? { lat: van.lat, lng: van.lng } : undefined,
+        earliest_availability: undefined, // earliest_availability is optional
+      };
+      return technicianData;
+    })
+    // Filter out entries that failed validation (returned null)
+    .filter((t): t is Technician => t !== null);
+
+  console.log(`Returning ${technicians.length} technicians mapped successfully.`);
   return technicians;
 }
 
-// Example usage (can be removed later)
+// Example usage
 /*
 getActiveTechnicians()
   .then(technicians => {

@@ -5,12 +5,13 @@ This project implements the backend logic for a dynamic job scheduling system de
 ## Key Features
 
 *   **Data Fetching**: Interfaces with a Supabase database to retrieve job, technician, equipment, and other relevant data.
+*   **Time Handling**: Consistently uses **UTC** for all internal calculations and **ISO 8601 strings** (e.g., `YYYY-MM-DDTHH:mm:ss.sssZ`) for data storage (database fields like `estimated_sched`) and external communication (optimization service payload/response).
 *   **Travel Time**: Integrates with the Google Maps Distance Matrix API to calculate travel times between locations, including caching.
-*   **Technician Availability**: Calculates technician availability based on work hours and existing locked/fixed jobs.
+*   **Technician Availability**: Calculates technician availability based on work hours, existing locked/fixed jobs, and potentially future days (considering home location).
 *   **Job Bundling**: Groups jobs belonging to the same order for potential scheduling as a single unit.
 *   **Technician Eligibility**: Determines which technicians can perform a job or bundle based on required equipment in their assigned van.
 *   **Optimization Service Integration**: Prepares a detailed payload and communicates with an external Python-based optimization microservice (expected to use OR-Tools) via HTTP to solve the vehicle routing problem.
-*   **Result Processing & DB Update**: Parses the schedule provided by the optimization service and updates job statuses, assignments, and estimated schedules in the Supabase database.
+*   **Multi-Day Planning & Final Update**: The core `runFullReplan` function handles planning for the current day and attempts to schedule unassigned (overflow) jobs on subsequent days (up to a limit). It tracks results internally and performs a **single consolidated database update** at the end, setting successfully placed jobs to `queued` (with assignment details) and unschedulable jobs to `pending_review`.
 
 ## Project Structure
 
@@ -72,16 +73,26 @@ A technician changing their availability.
 Significant unexpected delays reported.
 Periodically (e.g., start of the day).
 
-It performs the following sequence:
+It performs the following sequence (simplified view):
 
-1.  **Fetch Data (`src/supabase/`)**: Retrieves active technicians (`technicians.ts`) and relevant jobs (statuses: `queued`, `en_route`, `in_progress`, `fixed_time`) (`jobs.ts`) from Supabase using the client initialized in `client.ts`.
-2.  **Separate Jobs**: Divides fetched jobs into `lockedJobs` (cannot be rescheduled), `schedulableJobs` (status 'queued'), and identifies `fixedTimeJobs` from the locked set.
-3.  **Calculate Availability (`src/scheduler/availability.ts`)**: Determines the earliest time each technician is available and their starting location, considering `lockedJobs` and standard work hours.
-4.  **Bundle Jobs (`src/scheduler/bundling.ts`)**: Groups `schedulableJobs` belonging to the same order into `JobBundles`. Single jobs become `SchedulableJob` items.
-5.  **Determine Eligibility (`src/scheduler/eligibility.ts`)**: For each bundle/job, identifies eligible technicians based on required equipment (`src/supabase/equipment.ts`, `src/supabase/orders.ts`). Fetches van inventories. Breaks bundles if no single technician is eligible.
-6.  **Prepare Payload (`src/scheduler/payload.ts`)**: Compiles technician availability, items with eligibility, location data, fixed constraints, and calculates the travel time matrix using `src/google/maps.ts`.
-7.  **Call Optimization Service (`src/scheduler/optimize.ts`)**: Sends the prepared payload via HTTP POST to the configured external Python optimization microservice URL (defined in `.env`).
-8.  **Update Database (`src/db/update.ts`)**: Parses the response from the optimization service and performs batch updates on the `jobs` table in Supabase: sets `status`, `assigned_technician`, and `estimated_sched` for successful jobs; sets status to `pending_review` for unassigned/overflow jobs.
+1.  **Fetch Initial Data (`src/supabase/`)**: Retrieves active technicians (with current locations) and relevant jobs (primarily `queued`, potentially `locked` or `fixed_time`).
+2.  **Separate Jobs**: Identifies `lockedJobs`, `fixedTimeJobs`, and the initial set of `jobsToPlan` (e.g., `queued`).
+3.  **Pass 1 (Today):**
+    *   Calculates today's availability (`src/scheduler/availability.ts`) considering locked jobs.
+    *   Bundles (`src/scheduler/bundling.ts`), checks eligibility (`src/scheduler/eligibility.ts` -> `src/supabase/equipment.ts`).
+    *   Prepares payload (`src/scheduler/payload.ts` -> `src/google/maps.ts`).
+    *   Calls optimization service (`src/scheduler/optimize.ts`).
+    *   Processes results (`src/scheduler/results.ts`), updating *internal* state (tracking successful assignments and remaining `jobsToPlan`).
+4.  **Overflow Loop (Subsequent Days):**
+    *   Loops while `jobsToPlan` is not empty and day limit not reached.
+    *   Fetches technician details (with home locations) and job details for remaining `jobsToPlan`.
+    *   Calculates availability for the *next day* (`src/scheduler/availability.ts`).
+    *   Bundles, checks eligibility, prepares payload for remaining jobs.
+    *   Calls optimization service.
+    *   Processes results, updating *internal* state.
+5.  **Final Database Update (`src/db/update.ts`)**: Performs a **single batch update** based on the final internal state:
+    *   Sets successfully assigned jobs to `queued` with `assigned_technician` and `estimated_sched`.
+    *   Sets jobs that could not be scheduled to `pending_review`.
 
 ## Setup & Running
 
@@ -117,7 +128,7 @@ Run all tests:
 npm test
 ```
 
-See `tests/README.md` for details on specific test suites and coverage.
+See `tests/README.md` for details on specific test suites and coverage. Tests for `src/scheduler/orchestrator.ts` should specifically cover the refactored internal logic and final update mechanism.
 
 ## Key Dependencies
 
@@ -132,5 +143,5 @@ See `tests/README.md` for details on specific test suites and coverage.
 ## Further Information
 
 *   **Database Schema**: See `DB.md` for detailed table descriptions.
-*   **Planning & Architecture**: See `PLANNING.md` for high-level design and algorithm details.
+*   **Planning & Architecture**: See `PLANNING.md` for high-level design (including the refactored approach) and algorithm details.
 *   **Task Tracking**: See `TASK.md` for development progress.
