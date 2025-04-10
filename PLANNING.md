@@ -93,8 +93,8 @@ Apply a TSP optimization algorithm (e.g., 2-opt, or using a library) to reorder 
 Recalculate the final estimated_sched based on this optimized route [cite: 25, 29-31].
 
 Step 4: Handle Overflow
-
-Any 'queued' items (bundles or single jobs) that could not be assigned to any technician during Phases 1 or 2 remain in the 'queued' status (or are moved to a specific overflow status like 'pending_scheduling') for the next planning cycle.
+Any jobs that could not be assigned to any technician for completion today (due to time constraints, travel impossibility, etc.) are placed in the queue for the next workday.
+The planning process for the next day starts, using technicians' home locations as starting points and the overflow jobs as the input queue.
 
 Step 5: Update System State
 

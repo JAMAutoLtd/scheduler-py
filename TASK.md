@@ -102,7 +102,7 @@ This document tracks the development tasks for the dynamic job scheduling system
             *   [X] `bundling.test.ts`
             *   [X] `eligibility.test.ts`
         *   [ ] **Optimization Payload & Call (`tests/scheduler/`)**
-            *   [ ] `payload.test.ts`
+            *   [X] `payload.test.ts`
             *   [ ] `optimize.test.ts`
         *   [ ] **Result Processing & DB Update (`tests/scheduler/` & `tests/db/`)**
             *   [ ] `results.test.ts`
@@ -119,6 +119,20 @@ This document tracks the development tasks for the dynamic job scheduling system
 ## Discovered During Work (TODOs)
 
 *   (Add items here as they arise)
+*   [ ] Address TypeScript linter errors in `src/scheduler/optimize.ts` related to Axios response typing. ({Current Date})
+*   **[X] Critical:** Fix floating time epoch in `optimize-service/main.py`. The current `EPOCH` recalculates on service restart, causing inconsistent time conversions. Refactor `iso_to_seconds` and `seconds_to_iso` to use a fixed epoch (e.g., Unix epoch via `datetime.timestamp()` and `datetime.fromtimestamp()`). ({Current Date})
+*   [ ] Review travel time error handling in `optimize-service/main.py`. The large penalty (999999) for failed lookups might cause suboptimal routes instead of explicit errors. Consider alternative handling. ({Current Date})
+*   [ ] Review priority penalty calculation in `optimize-service/main.py`. Analyze if the current `base_penalty` and scaling formula (`base_penalty * (max_priority - item.priority + 1)`) effectively represent business value. Consider refining based on factors like job revenue, cost, technician rates, or SLA impact. ({Current Date})
+*   [ ] Consider implementing starvation protection for low-priority jobs. Investigate dynamically increasing the priority value *sent to the solver* based on job age (e.g., days since order created) without altering the original job record's priority. ({Current Date})
+
+*   **[ ] Future Enhancement (Low Priority): Convert Optimizer to Value-Based Optimization** - {Current Date}
+    *   **Goal:** Shift from minimizing travel time + penalties to maximizing net value (e.g., Job Revenue - Travel Cost).
+    *   **Steps:**
+        1.  **Data Enhancement:** Add estimated dollar `value` field to `OptimizationItem` inputs (representing potential revenue/profit).
+        2.  **Cost Modeling:** Develop a model to convert travel time (seconds) into travel cost (dollars), considering technician wages, vehicle costs (fuel, maintenance, depreciation), etc. This might be an average rate or tech/vehicle specific.
+        3.  **Callback Modification:** Update `travel_time_callback` (and the callback used by the arc cost evaluator) in `main.py` to return *dollar cost* instead of time (seconds).
+        4.  **Penalty Redefinition:** Change the penalty used in `AddDisjunction` to be the actual estimated `value` (dollars) lost if the job is dropped, instead of the current abstract high number.
+        5.  **Validation:** Thoroughly test the new model to ensure it produces financially sensible routes and correctly balances high-value jobs against travel costs.
 
 ---
 

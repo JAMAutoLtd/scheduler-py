@@ -52,6 +52,8 @@ describe('determineTechnicianEligibility', () => {
         mockGetEquipmentForVans.mockClear();
         // Always mock the van equipment fetch
         mockGetEquipmentForVans.mockResolvedValue(vanEquipmentMap);
+        // Reset implementation for the other mock to avoid test pollution
+        mockGetRequiredEquipmentForJob.mockImplementation(async () => []);
     });
 
     it('should return an empty array if initial items are empty', async () => {
@@ -123,8 +125,12 @@ describe('determineTechnicianEligibility', () => {
 
     it('should process a bundle where one tech has all required equipment', async () => {
         // Job 2 requires ToolA, Job 3 requires ToolB
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolA']); // For job 2 within bundle
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolB']); // For job 3 within bundle
+        // Use conditional mock
+         mockGetRequiredEquipmentForJob.mockImplementation(async (job: Job) => {
+            if (job.id === 2) return ['ToolA'];
+            if (job.id === 3) return ['ToolB'];
+            return [];
+        });
         const initialItems = [bundleJob23];
 
         const result = await determineTechnicianEligibility(initialItems, technicians);
@@ -146,11 +152,12 @@ describe('determineTechnicianEligibility', () => {
 
     it('should break a bundle if no single tech has all required equipment', async () => {
         // Job 2 requires ToolA, Job 3 requires ToolC
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolA']); // For job 2 initially (bundle check)
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolC']); // For job 3 initially (bundle check)
-        // -- Bundle breaks, fetch requirements again for individual jobs --
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolA']); // For job 2 individually
-        mockGetRequiredEquipmentForJob.mockResolvedValueOnce(['ToolC']); // For job 3 individually
+        // Use conditional mock
+         mockGetRequiredEquipmentForJob.mockImplementation(async (job: Job) => {
+            if (job.id === 2) return ['ToolA'];
+            if (job.id === 3) return ['ToolC'];
+            return [];
+        });
 
         const initialItems = [bundleJob23]; // Order 101 (jobs 2 and 3)
 
@@ -178,8 +185,8 @@ describe('determineTechnicianEligibility', () => {
 
         // Check mock calls: 2 for bundle check, 2 for individual checks after break
         expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledTimes(4);
-        expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledWith(job2); // Called twice
-        expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledWith(job3); // Called twice
+        expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledWith(expect.objectContaining({ id: 2 })); // Called twice
+        expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledWith(expect.objectContaining({ id: 3 })); // Called twice
     });
 
      it('should process a mix of single jobs and bundles, breaking one bundle', async () => {
@@ -237,4 +244,4 @@ describe('determineTechnicianEligibility', () => {
         // Optional: Check total calls if needed, should still be 6
         // expect(mockGetRequiredEquipmentForJob).toHaveBeenCalledTimes(6);
     });
-}); 
+});

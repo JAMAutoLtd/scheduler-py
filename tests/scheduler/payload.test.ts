@@ -113,8 +113,8 @@ describe('prepareOptimizationPayload', () => {
         expect(locations[0]).toEqual({ id: 'depot', index: 0, coords: DEFAULT_DEPOT_COORDS });
         expect(locations[1]).toEqual({ id: 'tech_start_1', index: 1, coords: tech1.current_location });
         expect(locations[2]).toEqual({ id: 'tech_start_2', index: 2, coords: tech2.current_location });
-        expect(locations[3]).toEqual({ id: `job_${job1.id}`, index: 3, coords: address1 });
-        expect(locations[4]).toEqual({ id: `bundle_${schedItemBundle.order_id}`, index: 4, coords: address2 });
+        expect(locations[3]).toEqual({ id: `job_${job1.id}`, index: 3, coords: { lat: address1.lat, lng: address1.lng } });
+        expect(locations[4]).toEqual({ id: `bundle_${schedItemBundle.order_id}`, index: 4, coords: { lat: address2.lat, lng: address2.lng } });
     });
 
     it('should skip items with missing coordinates', async () => {

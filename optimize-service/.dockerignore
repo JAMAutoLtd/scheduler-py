@@ -1,0 +1,23 @@
+# Ignore Python virtual environment
+.venv
+
+# Ignore Test directory
+tests/
+
+# Ignore Python bytecode files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE/editor specific files
+.idea/
+.vscode/
+*.swp
+
+# Ignore Git directory (if initialized)
+.git/
+
+# Ignore other potentially sensitive or large files
+.env*
+*.log 

@@ -179,24 +179,7 @@
 
 - An order can be split into multiple jobs if no single van can handle all services.
 - Each job is assigned to exactly one technician (and thus one van).
-- `job_services` will specify which services this job includes.
 - Has indexes on status and estimated_sched for efficient querying.
-
----
-
-## 10. Job Services (job_services)
-
-**Purpose:** Links each job to the specific services it will perform.
-
-**Fields**
-
-- **job_id** (int, FK → jobs.id)
-- **service_id** (int, FK → services.id)
-
-**Key Points**
-
-- A single job can handle multiple services.
-- Has a composite primary key on (job_id, service_id).
 
 ---
 
@@ -236,7 +219,6 @@
 
 - Basic service definitions.
 - Required equipment is defined in the specialized `*_equipment_requirements` tables based on service and vehicle.
-- Ties to `order_services` and `job_services` to indicate requested and assigned services.
 - Service categories are strictly controlled via enum.
 
 ---
@@ -267,12 +249,10 @@
 
 - **van_id** (int, FK → vans.id)
 - **equipment_id** (int, FK → equipment.id)
-- **equipment_model** (text)
 
 **Key Points**
 
 - Has a composite primary key on (van_id, equipment_id).
-- Includes the specific model of equipment in each van.
 
 ---
 

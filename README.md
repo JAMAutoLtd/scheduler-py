@@ -62,7 +62,17 @@ This project implements the backend logic for a dynamic job scheduling system de
 
 ## Core Modules & Data Flow (`runFullReplan`)
 
-The main orchestration logic resides in `src/scheduler/orchestrator.ts`, specifically the `runFullReplan` function. When executed (e.g., by running `npm start` or `npm run dev`), it performs the following sequence:
+The main orchestration logic resides in `src/scheduler/orchestrator.ts`, specifically the `runFullReplan` function. Execute (e.g., by running `npm start` or `npm run dev`) or using a System Trigger.
+
+System Trigger: A full replan calculation is triggered by significant events. Triggering is not handled by this application. Examples include:
+
+A new job arriving with 'queued' status.
+A job being completed or cancelled.
+A technician changing their availability.
+Significant unexpected delays reported.
+Periodically (e.g., start of the day).
+
+It performs the following sequence:
 
 1.  **Fetch Data (`src/supabase/`)**: Retrieves active technicians (`technicians.ts`) and relevant jobs (statuses: `queued`, `en_route`, `in_progress`, `fixed_time`) (`jobs.ts`) from Supabase using the client initialized in `client.ts`.
 2.  **Separate Jobs**: Divides fetched jobs into `lockedJobs` (cannot be rescheduled), `schedulableJobs` (status 'queued'), and identifies `fixedTimeJobs` from the locked set.

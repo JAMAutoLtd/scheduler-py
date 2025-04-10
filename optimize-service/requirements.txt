@@ -1,0 +1,6 @@
+    # requirements.txt
+    ortools
+    fastapi # Or flask
+    uvicorn[standard] # ASGI server for FastAPI
+    pydantic # For data modeling/validation (used heavily by FastAPI)
+    pytest # For unit testing
