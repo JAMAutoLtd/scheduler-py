@@ -1,6 +1,29 @@
 # CHANGELOG
 
-## {Current Date}
+## {Current Date} - Python Optimization Service Debugging
+
+### Fixed
+- **Arrival Time Calculation (`optimize-service/main.py`):** Corrected the calculation of `arrivalTimeISO` for the first stop in a route when a subsequent stop has a fixed time constraint. 
+    - **Problem:** The physical arrival time (departure from previous + travel) was being reported incorrectly as the *scheduled* start time (dictated by the fixed constraint) in these specific scenarios.
+    - **Troubleshooting:** Initial attempts to use `time_dimension.SlackVar` to derive physical arrival from scheduled start caused C++ crashes (`Windows fatal exception: access violation`). Analysis revealed that `assignment.Value(time_dimension.CumulVar(start_node_index))` seemed to return a value influenced by downstream fixed constraints, leading to an incorrect departure time calculation for the *first* segment.
+    - **Solution:** Modified the loop processing the assignment to treat the first segment uniquely. Departure time for the first segment is now calculated based on the technician's `earliestStartTimeISO`. Subsequent segments correctly calculate departure based on the previous stop's completion (`CumulVar(previous) + ServiceTime(previous)`).
+    - **Result:** This ensures `arrivalTimeISO` accurately reflects the physical arrival time, while `startTimeISO` reflects the potentially later scheduled start time due to constraints.
+- **OR-Tools Time Handling (`optimize-service/main.py`):** Resolved `CP Solver fail` exceptions by refactoring the `optimize_schedule` function to use relative time:
+    - Calculated a `planning_epoch_seconds` based on the earliest technician start time.
+    - Converted absolute Unix timestamps (technician windows, fixed constraints) to seconds relative to the `planning_epoch_seconds` before passing them to OR-Tools `TimeDimension.SetRange`.
+    - Adjusted the `TimeDimension` horizon calculation to be relative.
+    - Converted relative times from the solver results back to absolute Unix timestamps before generating output ISO strings.
+- **OR-Tools `AddDimensionWithVehicleCapacity` (`optimize-service/main.py`):** Fixed a `TypeError: 'int' object is not iterable` by providing the calculated time horizon as a list (`[horizon_with_buffer] * num_vehicles`) instead of a single integer.
+
+### Changed
+- **Time Conversion Utilities (`optimize-service/main.py`):** Made minor robustness improvements to `iso_to_seconds` (handling 'Z' suffix more explicitly) and `seconds_to_iso` (using `strftime` to output 'Z' suffix for UTC).
+
+### Discovered / To Do
+- [ ] **Investigate Remaining Test Failures (`tests/test_main.py`):**
+    - `test_iso_to_seconds_conversion` and `test_seconds_to_iso_conversion` still fail with a one-hour discrepancy. This might be related to timezone handling differences between the test environment and the function logic, or issues in the test assertions themselves.
+    - `test_optimize_schedule_final_travel_leg` fails on asserting `arrivalTimeISO`. The expected value (`1970-01-01T08:00:00Z`) appears incorrect, potentially using a relative time value instead of the expected absolute Unix timestamp. Needs test logic review.
+
+## {Previous Date - e.g., 2024-07-29}
 
 ### Added
 - **Testing:** Completed implementation of all placeholder unit tests in `tests/scheduler/orchestrator.test.ts`, covering various scenarios like multi-day overflow, weekend skips, bundling, and error handling for the refactored `runFullReplan`.

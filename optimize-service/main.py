@@ -23,7 +23,14 @@ def iso_to_seconds(iso_str: str) -> int:
     dt = datetime.fromisoformat(iso_str)
     # Ensure dt is offset-aware, defaulting to UTC if naive
     if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        # Attempt to handle strings ending with 'Z' correctly even if fromisoformat misses it sometimes
+        if iso_str.endswith('Z'):
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            # For truly naive strings, assume UTC. Consider logging a warning.
+            # print(f"Warning: ISO string '{iso_str}' is timezone-naive. Assuming UTC.")
+            dt = dt.replace(tzinfo=timezone.utc)
+            
     # Convert to UTC timestamp (seconds since Unix epoch)
     return int(dt.timestamp())
     # return int((dt - EPOCH).total_seconds()) # Old logic
@@ -34,7 +41,8 @@ def seconds_to_iso(seconds: int) -> str:
     # Convert seconds since epoch to UTC datetime object
     dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
     # dt = EPOCH + timedelta(seconds=seconds) # Old logic
-    return dt.isoformat()
+    # Use isoformat() with 'Z' suffix for explicit UTC indication
+    return dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
 # --- FastAPI App ---
 
@@ -59,6 +67,15 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
         return OptimizationResponsePayload(status='success', message='No items provided for scheduling.', routes=[], unassignedItemIds=[])
     if not payload.technicians:
         return OptimizationResponsePayload(status='error', message='No technicians available for scheduling.', routes=[], unassignedItemIds=[item.id for item in payload.items])
+
+    # --- Calculate Planning Epoch ---
+    # Use the earliest technician start time as the reference point (epoch) for relative time calculations.
+    try:
+        planning_epoch_seconds = min(iso_to_seconds(t.earliestStartTimeISO) for t in payload.technicians)
+        print(f"Planning Epoch (Earliest Tech Start): {planning_epoch_seconds} ({seconds_to_iso(planning_epoch_seconds)})")
+    except ValueError: # Handle case where iso_to_seconds might fail or list is empty (already checked)
+         print("Error calculating planning epoch. Check technician time formats.")
+         raise HTTPException(status_code=400, detail="Invalid technician start times provided.")
 
     num_locations = len(payload.locations)
     num_vehicles = len(payload.technicians)
@@ -138,36 +155,43 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
     # --- Dimensions ---
 
     # Time Dimension
+    # Calculate the maximum horizon needed relative to the planning epoch
+    max_relative_horizon = max(iso_to_seconds(t.latestEndTimeISO) - planning_epoch_seconds for t in payload.technicians)
+    horizon_with_buffer = max_relative_horizon + (7 * 24 * 3600) # Add a week buffer
+    # Ensure horizon is not negative if all end times are before the epoch (edge case)
+    horizon_with_buffer = max(0, horizon_with_buffer)
+
     routing.AddDimensionWithVehicleCapacity(
         combined_time_callback_index, # Use combined travel + service time for dimension propagation
-        0,  # Revert slack back to 0
-        [3600 * 24 * 7] * num_vehicles,  # Large upper bound for total route time (e.g., 1 week)
+        0,  # Slack for the dimension (usually 0 for time)
+        # Provide a list of capacities, one for each vehicle
+        [horizon_with_buffer] * num_vehicles, 
         False,  # start cumul to zero = False (start times vary based on tech availability)
         "Time"
     )
     time_dimension = routing.GetDimensionOrDie("Time")
     # Ensure the time dimension uses the travel time for transit calculations
     # (This might already be implicit via SetArcCostEvaluatorOfAllVehicles, but let's be explicit if possible/needed)
-    # The previous attempt time_dimension.SetTransitEvaluatorOfAllVehicles caused AttributeError.
-    # Checking docs again... the dimension implicitly uses the transit callback registered with the model.
-    # No need to set it explicitly on the dimension itself.
 
     # --- Constraints ---
 
     # Technician Time Windows
     for i, tech in enumerate(payload.technicians):
-        start_seconds = iso_to_seconds(tech.earliestStartTimeISO)
-        end_seconds = iso_to_seconds(tech.latestEndTimeISO)
-        # Ensure times are non-negative relative to EPOCH
-        start_seconds = max(0, start_seconds)
-        end_seconds = max(0, end_seconds)
-        # Ensure start <= end (basic sanity check)
-        if start_seconds > end_seconds:
-            print(f"Warning: Technician {tech.id} has start time after end time ({start_seconds} > {end_seconds}). Setting range to [{start_seconds}, {start_seconds}].")
-            end_seconds = start_seconds # Or handle as error?
+        start_seconds_abs = iso_to_seconds(tech.earliestStartTimeISO)
+        end_seconds_abs = iso_to_seconds(tech.latestEndTimeISO)
         
-        time_dimension.CumulVar(routing.Start(i)).SetRange(start_seconds, end_seconds)
-        time_dimension.CumulVar(routing.End(i)).SetRange(start_seconds, end_seconds)
+        # Convert to relative seconds
+        start_seconds_rel = max(0, start_seconds_abs - planning_epoch_seconds)
+        end_seconds_rel = max(0, end_seconds_abs - planning_epoch_seconds)
+
+        # Ensure start <= end (basic sanity check)
+        if start_seconds_rel > end_seconds_rel:
+            print(f"Warning: Technician {tech.id} has relative start time after end time ({start_seconds_rel} > {end_seconds_rel}). Setting range to [{start_seconds_rel}, {start_seconds_rel}].")
+            end_seconds_rel = start_seconds_rel # Or handle as error?
+        
+        print(f"  Tech {tech.id}: Abs Window [{start_seconds_abs}, {end_seconds_abs}], Rel Window [{start_seconds_rel}, {end_seconds_rel}]") # Debug print
+        time_dimension.CumulVar(routing.Start(i)).SetRange(start_seconds_rel, end_seconds_rel)
+        time_dimension.CumulVar(routing.End(i)).SetRange(start_seconds_rel, end_seconds_rel)
 
     # Fixed Time Constraints
     for constraint in payload.fixedConstraints:
@@ -179,14 +203,14 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
         item_loc_index = payload.items[item_payload_idx].locationIndex
         solver_index = manager.NodeToIndex(item_loc_index)
 
-        fixed_time_seconds = iso_to_seconds(constraint.fixedTimeISO)
-        # Ensure time is non-negative
-        fixed_time_seconds = max(0, fixed_time_seconds)
+        fixed_time_seconds_abs = iso_to_seconds(constraint.fixedTimeISO)
+        # Convert to relative seconds
+        fixed_time_seconds_rel = max(0, fixed_time_seconds_abs - planning_epoch_seconds)
 
         # Add constraint for the specific item index
-        # For a fixed time, the range is [fixed_time, fixed_time]
-        time_dimension.CumulVar(solver_index).SetRange(fixed_time_seconds, fixed_time_seconds)
-        print(f"Applied fixed time constraint for item {constraint.itemId} at index {solver_index} to be {fixed_time_seconds}s")
+        # For a fixed time, the range is [fixed_time_rel, fixed_time_rel]
+        time_dimension.CumulVar(solver_index).SetRange(fixed_time_seconds_rel, fixed_time_seconds_rel)
+        print(f"Applied fixed time constraint for item {constraint.itemId} at index {solver_index} to be {fixed_time_seconds_rel}s (relative)")
 
 
     # Technician Eligibility (Disjunctions) & Priority Penalties
@@ -284,7 +308,7 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
     # search_parameters.time_limit.seconds = 30 # Example time limit
-    search_parameters.time_limit.FromSeconds(30) # Set time limit to 30s
+    search_parameters.time_limit.FromSeconds(1) # TODO: SET TO REAL TIME LIMIT
     # <<< Add solution limit to stop after first solution >>>
     # search_parameters.solution_limit = 1 # <<< REMOVED
 
@@ -310,21 +334,35 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
             technician_id = payload.technicians[vehicle_id].id
             route_stops: List[RouteStop] = []
             total_travel_time_seconds = 0
+            is_first_segment = True # Flag to handle the first move differently
 
             while True: # Loop until we explicitly break at the end node
                 # Get the next index in the route assigned by the solver
                 next_index = assignment.Value(routing.NextVar(index))
 
                 # Calculate travel time for the segment from current index to next index
+                # Use the original travel_time_callback which returns duration in seconds
                 segment_travel_time = travel_time_callback(index, next_index)
-                total_travel_time_seconds += segment_travel_time
+                
+                # --- Accumulate travel time ---
+                # Only add segment travel if it's not a loop back to the start or from the start to itself immediately
+                # And only if the travel time is reasonable (not the large penalty)
+                if index != next_index and segment_travel_time < 999999:
+                    # Check if 'index' is the start node for this vehicle
+                    is_start_node = (index == routing.Start(vehicle_id))
+                    # Check if 'next_index' is the end node for this vehicle
+                    is_end_node = routing.IsEnd(next_index)
 
-                # Check if the next node is the end node for this vehicle
+                    # Accumulate travel time unless it's the very first move from start OR the very last move to end?
+                    # OR-Tools objective includes all travel. Let's just sum it simply first.
+                    # Correction: Sum ALL valid segment travel times. The total is needed later.
+                    total_travel_time_seconds += segment_travel_time
+
+                # --- Check if the next node is the end node for this vehicle ---
                 if routing.IsEnd(next_index):
                     # We have completed the route segments for this vehicle.
-                    # The loop terminates after this iteration.
-                    print(f"Vehicle {vehicle_id}: Reached end node {manager.IndexToNode(next_index)}. Total travel: {total_travel_time_seconds}s")
-                    break 
+                    print(f"Vehicle {vehicle_id}: Reached end node {manager.IndexToNode(next_index)}. Total travel calculated: {total_travel_time_seconds}s")
+                    break # Exit the while loop
 
                 # --- Process the stop at `next_index` (it's not the end node) ---
                 node_index = manager.IndexToNode(next_index)
@@ -333,37 +371,92 @@ async def optimize_schedule(payload: OptimizationRequestPayload) -> Optimization
                 if current_item:
                     assigned_item_ids.add(current_item.id)
 
-                    # Calculate arrival time at this stop (next_index)
-                    # Arrival = Departure_from_previous(index) + Travel_time(index -> next_index)
-                    last_start_time_var = time_dimension.CumulVar(index)
-                    last_service_duration = service_time_callback(index) # Duration at previous node (0 for start)
-                    last_departure_time = assignment.Value(last_start_time_var) + last_service_duration
-                    calculated_arrival_at_current = last_departure_time + segment_travel_time
-
-                    # Get the service start time at this stop (next_index) directly from the solver
+                    # --- Get relative times from solver ---
                     current_start_time_var = time_dimension.CumulVar(next_index)
-                    current_start_time = assignment.Value(current_start_time_var)
-
-                    # Calculate service end time
-                    current_service_duration = current_item.durationSeconds
-                    current_end_time = current_start_time + current_service_duration
+                    current_start_time_rel = assignment.Value(current_start_time_var)
                     
+                    # --- Calculate Arrival Time using Slack Var ---
+                    #current_slack_var = time_dimension.SlackVar(next_index)
+                    #current_wait_time_rel = assignment.Value(current_slack_var) # Wait time before service
+                    #arrival_at_next_rel = current_start_time_rel - current_wait_time_rel
+                    # --- End Arrival Time Calculation ---
+                    
+                    current_service_duration = current_item.durationSeconds # Duration is absolute
+                    current_end_time_rel = current_start_time_rel + current_service_duration
+                    
+                    # Calculate arrival time relative to planning epoch
+                    if is_first_segment:
+                        # For the first segment, departure is based on technician's earliest start
+                        tech_earliest_start_abs = iso_to_seconds(payload.technicians[vehicle_id].earliestStartTimeISO)
+                        departure_from_index_rel = max(0, tech_earliest_start_abs - planning_epoch_seconds)
+                        # No service duration at the actual start node
+                    else:
+                        # For subsequent segments, departure is based on the previous stop's scheduled start + service
+                        start_cumul_var = time_dimension.CumulVar(index)
+                        start_cumul_rel = assignment.Value(start_cumul_var) # Time when service at 'index' CAN start
+                        previous_service_duration = service_time_callback(index) # Service duration at the previous node 'index'
+                        departure_from_index_rel = start_cumul_rel + previous_service_duration
+
+                    # Physical arrival is departure + travel
+                    physical_arrival_at_next_rel = departure_from_index_rel + segment_travel_time # <-- Use this for arrivalTimeISO
+
+                    # Scheduled start time is dictated by the solver, respecting constraints (like fixed times)
+                    scheduled_start_time_rel = assignment.Value(time_dimension.CumulVar(next_index)) # <-- Use this for startTimeISO
+                    scheduled_end_time_rel = scheduled_start_time_rel + current_service_duration # <-- Use this for endTimeISO
+                    # --- End Calculation ---
+
+                    # --- Convert relative times to absolute Unix seconds ---
+                    arrival_at_next_abs = physical_arrival_at_next_rel + planning_epoch_seconds
+                    current_start_time_abs = scheduled_start_time_rel + planning_epoch_seconds
+                    current_end_time_abs = scheduled_end_time_rel + planning_epoch_seconds
+
                     # Consistency check (optional but good for debugging)
-                    if current_start_time < calculated_arrival_at_current - 1: # Allow 1s tolerance for float issues
-                         print(f"!!! WARNING Vehicle {vehicle_id}, Item {current_item.id}: Solver start time {current_start_time} is earlier than calculated arrival {calculated_arrival_at_current}. Check model consistency.")
+                    # Check if absolute start time is >= absolute arrival time (allowing for minimal slack)
+                    # if current_start_time_abs < arrival_at_next_abs - 1: # Allow 1s tolerance
+                    #      print(f"!!! WARNING Vehicle {vehicle_id}, Item {current_item.id}: Solver abs start time {current_start_time_abs} ({seconds_to_iso(current_start_time_abs)}) is earlier than calculated abs arrival {arrival_at_next_abs} ({seconds_to_iso(arrival_at_next_abs)}). Diff: {arrival_at_next_abs - current_start_time_abs}s. Check model.")
+
+                    # <<< Remove Debug Prints (already removed most in previous edit)
+                    # print(f"DEBUG Vehicle {vehicle_id}, Item {current_item.id}:")
+                    # print(f"  - Prev Node Idx: {manager.IndexToNode(index)}, Curr Node Idx: {manager.IndexToNode(next_index)}")
+                    # print(f"  - physical_arrival_at_next_rel: {physical_arrival_at_next_rel}")
+                    # print(f"  - scheduled_start_time_rel:   {scheduled_start_time_rel}")
+                    # print(f"  - arrival_at_next_abs:        {arrival_at_next_abs} -> {seconds_to_iso(arrival_at_next_abs)}")
+                    # print(f"  - current_start_time_abs:     {current_start_time_abs} -> {seconds_to_iso(current_start_time_abs)}")
+                    # print(f"  - current_end_time_abs:       {current_end_time_abs} -> {seconds_to_iso(current_end_time_abs)}")
+                    # <<< End Debug Prints >>>
 
                     route_stops.append(RouteStop(
                         itemId=current_item.id,
-                        arrivalTimeISO=seconds_to_iso(calculated_arrival_at_current),
-                        startTimeISO=seconds_to_iso(current_start_time),
-                        endTimeISO=seconds_to_iso(current_end_time)
+                        arrivalTimeISO=seconds_to_iso(arrival_at_next_abs),
+                        startTimeISO=seconds_to_iso(current_start_time_abs),
+                        endTimeISO=seconds_to_iso(current_end_time_abs)
                     ))
                 else:
-                    # This case should not happen if only item locations are visited besides start/end
-                    print(f"Warning: Could not find item for node index {node_index} (solver index {next_index}) in route for vehicle {vehicle_id}")
+                    # This case should ideally not happen if only item locations are visited besides start/end
+                    # unless an item is located *at* a depot.
+                    # Let's verify if node_index corresponds to a start/end depot location for this vehicle.
+                    tech_start_loc = payload.technicians[vehicle_id].startLocationIndex
+                    tech_end_loc = payload.technicians[vehicle_id].endLocationIndex
+                    if node_index == tech_start_loc:
+                        print(f"Debug: Vehicle {vehicle_id} visited its own start depot {node_index} mid-route?")
+                    elif node_index == tech_end_loc:
+                         print(f"Debug: Vehicle {vehicle_id} visited its own end depot {node_index} mid-route?")
+                    else:
+                         # Check if it's another vehicle's depot
+                         is_any_depot = False
+                         for t in payload.technicians:
+                             if node_index == t.startLocationIndex or node_index == t.endLocationIndex:
+                                 is_any_depot = True
+                                 break
+                         if is_any_depot:
+                            print(f"Debug: Vehicle {vehicle_id} visited depot node {node_index} (solver index {next_index}) mid-route. No item found.")
+                         else:
+                             # Truly unexpected node
+                             print(f"Warning: Could not find item for non-depot node index {node_index} (solver index {next_index}) in route for vehicle {vehicle_id}")
 
                 # Move to the next node for the next iteration
                 index = next_index
+                is_first_segment = False # No longer the first segment
                 # --- End of loop iteration ---
 
             # --- After loop for one vehicle --- 
